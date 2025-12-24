@@ -53,3 +53,6 @@ dist/
 
 UniversalProjectCombiner.java
 ProjectCombiner.java
+
+Jenkinsfile - Copy
+docker-compose.yml
