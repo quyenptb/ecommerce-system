@@ -1,0 +1,319 @@
+
+
+/* ==========================================================================
+   FILE: application-common.yml
+   PATH: application-common.yml
+   ========================================================================== */
+
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/${service.name}
+    username: admin
+    password: admin123
+    hikari:
+      maximum-pool-size: 10
+      minimum-idle: 5
+      connection-timeout: 30000
+      idle-timeout: 600000
+      max-lifetime: 1800000
+  
+  jpa:
+    hibernate:
+      ddl-auto: update
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        format_sql: true
+    show-sql: false
+  
+  kafka:
+    bootstrap-servers: localhost:9092
+    consumer:
+      group-id: ${spring.application.name}-group
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      properties:
+        spring.json.trusted.packages: "*"
+        spring.json.value.default.type: java.lang.Object
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      properties:
+        acks: all
+        retries: 3
+    topics:
+      customer-created: customer.created
+      order-created: order.created
+      order-status-changed: order.status.changed
+      payment-processed: payment.processed
+      inventory-updated: inventory.updated
+  
+  redis:
+    host: localhost
+    port: 6379
+    password: redis123
+    timeout: 2000ms
+
+resilience4j:
+  circuitbreaker:
+    instances:
+      default:
+        sliding-window-size: 10
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 5s
+  retry:
+    instances:
+      default:
+        max-attempts: 3
+        wait-duration: 1s
+
+logging:
+  level:
+    com.ecommerce: DEBUG
+    org.springframework.web: INFO
+    org.hibernate.SQL: WARN
+    org.hibernate.type.descriptor.sql.BasicBinder: WARN
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} - %msg%n"
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: always
+  metrics:
+    export:
+      prometheus:
+        enabled: true
+  tracing:
+    sampling:
+      probability: 1.0
+
+
+/* ==========================================================================
+   FILE: docker-compose.yml
+   PATH: docker-compose.yml
+   ========================================================================== */
+
+version: '3.8'
+
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.4.0
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+
+  kafka:
+    image: confluentinc/cp-kafka:7.4.0
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: ecommerce
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: admin123
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: redis-server --requirepass redis123
+
+  elasticsearch:
+    image: elasticsearch:8.11.0
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+    ports:
+      - "9200:9200"
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+
+  kibana:
+    image: elastic/kibana:8.11.0
+    ports:
+      - "5601:5601"
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+    depends_on:
+      - elasticsearch
+
+volumes:
+  postgres_data:
+  elasticsearch_data:
+
+
+/* ==========================================================================
+   FILE: ProjectCombiner.java
+   PATH: ProjectCombiner.java
+   ========================================================================== */
+
+import java.io.BufferedWriter;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.*;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.Comparator;
+import java.util.List;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
+
+public class ProjectCombiner {
+
+    // Tên thư mục chứa kết quả xuất ra
+    private static final String EXPORT_DIR_NAME = "exported_source_code";
+
+    private static final String JAVA_EXTENSION = ".java";
+    private static final String OUTPUT_EXTENSION = ".txt";
+
+    // Format ngày giờ cho tên file (YYYYMMDD_HHmmss)
+    private static final DateTimeFormatter TIMESTAMP_FMT = DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss");
+
+    private static final String FILE_HEADER = "\n\n/* ==========================================================================\n" +
+            "   SOURCE FILE: %s\n" +
+            "   PATH: %s\n" +
+            "   ========================================================================== */\n\n";
+
+    public static void main(String[] args) {
+        Path rootPath = Paths.get(".").toAbsolutePath().normalize();
+        String projectName = rootPath.getFileName().toString();
+
+        // Tạo đường dẫn đến folder xuất file
+        Path exportDirPath = rootPath.resolve(EXPORT_DIR_NAME);
+
+        System.out.println("--- BẮT ĐẦU XỬ LÝ DỰ ÁN: " + projectName + " ---");
+
+        try {
+            // 1. Chuẩn bị folder xuất (Tạo mới hoặc dọn dẹp cũ)
+            prepareExportDirectory(exportDirPath);
+
+            // 2. Tạo timestamp hiện tại
+            String timestamp = LocalDateTime.now().format(TIMESTAMP_FMT);
+
+            // 3. Định nghĩa file tổng (Master File)
+            String masterFileName = String.format("%s_ALL_CODE_%s%s", projectName, timestamp, OUTPUT_EXTENSION);
+            Path masterOutputPath = exportDirPath.resolve(masterFileName);
+
+            // Mở Writer cho file tổng
+            try (BufferedWriter masterWriter = Files.newBufferedWriter(masterOutputPath, StandardCharsets.UTF_8, StandardOpenOption.CREATE, StandardOpenOption.APPEND)) {
+
+                // 4. Quét toàn bộ project
+                try (Stream<Path> paths = Files.walk(rootPath)) {
+                    List<Path> directories = paths.filter(Files::isDirectory)
+                            .filter(p -> !p.equals(exportDirPath)) // Không quét folder output
+                            .collect(Collectors.toList());
+
+                    for (Path dir : directories) {
+                        processDirectory(dir, rootPath, exportDirPath, masterWriter, timestamp);
+                    }
+                }
+            }
+
+            System.out.println("\n✅ HOÀN THÀNH TẤT CẢ!");
+            System.out.println("📂 Folder kết quả: " + exportDirPath);
+            System.out.println("📄 File tổng: " + masterFileName);
+
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+
+    // Hàm tạo và dọn dẹp thư mục xuất
+    private static void prepareExportDirectory(Path exportDirPath) throws IOException {
+        if (Files.exists(exportDirPath)) {
+            System.out.println("🧹 Đang dọn dẹp file cũ trong folder: " + EXPORT_DIR_NAME);
+            try (Stream<Path> files = Files.list(exportDirPath)) {
+                files.forEach(file -> {
+                    try {
+                        Files.delete(file);
+                    } catch (IOException e) {
+                        System.err.println("Không thể xóa file: " + file);
+                    }
+                });
+            }
+        } else {
+            Files.createDirectories(exportDirPath);
+            System.out.println("📁 Đã tạo folder mới: " + EXPORT_DIR_NAME);
+        }
+    }
+
+    private static void processDirectory(Path dir, Path rootPath, Path exportDirPath, BufferedWriter masterWriter, String timestamp) {
+        try {
+            // Lấy danh sách file .java trong folder hiện tại
+            List<Path> javaFiles = Files.list(dir)
+                    .filter(p -> p.toString().endsWith(JAVA_EXTENSION))
+                    .filter(p -> !p.getFileName().toString().equals("ProjectCombiner.java"))
+                    .collect(Collectors.toList());
+
+            if (javaFiles.isEmpty()) {
+                return;
+            }
+
+            // Tạo tên file riêng cho folder này (kèm timestamp)
+            String folderName = dir.getFileName().toString();
+            String folderOutputName = String.format("%s_%s%s", folderName, timestamp, OUTPUT_EXTENSION);
+            Path folderOutputPath = exportDirPath.resolve(folderOutputName);
+
+            System.out.println("👉 Xử lý: " + folderName + " -> " + folderOutputName);
+
+            // Mở Writer cho file folder
+            try (BufferedWriter folderWriter = Files.newBufferedWriter(folderOutputPath, StandardCharsets.UTF_8, StandardOpenOption.CREATE, StandardOpenOption.APPEND)) {
+
+                for (Path javaFile : javaFiles) {
+                    processSingleFile(javaFile, rootPath, masterWriter, folderWriter);
+                }
+            }
+
+        } catch (IOException e) {
+            System.err.println("Lỗi khi xử lý folder: " + dir);
+        }
+    }
+
+    private static void processSingleFile(Path javaFile, Path rootPath, BufferedWriter masterWriter, BufferedWriter folderWriter) throws IOException {
+        String relativePath = rootPath.relativize(javaFile).toString();
+        String header = String.format(FILE_HEADER, javaFile.getFileName(), relativePath);
+
+        // Ghi Header
+        masterWriter.write(header);
+        folderWriter.write(header);
+
+        // Đọc và lọc nội dung
+        List<String> lines = Files.readAllLines(javaFile, StandardCharsets.UTF_8);
+        for (String line : lines) {
+            String trimmedLine = line.trim();
+
+            // Loại bỏ import
+            if (trimmedLine.startsWith("import ")) {
+                continue;
+            }
+
+            masterWriter.write(line);
+            masterWriter.newLine();
+            folderWriter.write(line);
+            folderWriter.newLine();
+        }
+    }
+}

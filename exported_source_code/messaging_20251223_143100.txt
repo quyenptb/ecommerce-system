@@ -1,0 +1,244 @@
+
+
+/* ==========================================================================
+   FILE: CustomerDomainEventAdapter.java
+   PATH: customer-service\src\main\java\com\ecommerce\customer\infrastructure\messaging\CustomerDomainEventAdapter.java
+   ========================================================================== */
+
+package com.ecommerce.customer.infrastructure.messaging;
+
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Component;
+import org.springframework.transaction.event.TransactionPhase;
+import org.springframework.transaction.event.TransactionalEventListener;
+
+import com.ecommerce.customer.event.CustomerCreatedEvent;
+
+@Component
+@RequiredArgsConstructor
+@Slf4j
+public class CustomerDomainEventAdapter {
+
+    private final CustomerEventPublisher kafkaPublisher;
+
+    // @TransactionalEventListener đảm bảo chỉ bắn Kafka KHI transaction DB đã commit thành công.
+    // Nếu lưu DB thất bại, event này sẽ không được bắn -> Đảm bảo tính nhất quán.
+    @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
+    public void handleCustomerCreatedEvent(CustomerCreatedEvent event) {
+        log.info("Domain event received: CustomerCreatedEvent for ID: {}. Forwarding to Kafka...", event.getCustomerId());
+        kafkaPublisher.publishCustomerCreatedEvent(event);
+    }
+}
+
+
+/* ==========================================================================
+   FILE: CustomerEventPublisher.java
+   PATH: customer-service\src\main\java\com\ecommerce\customer\infrastructure\messaging\CustomerEventPublisher.java
+   ========================================================================== */
+
+package com.ecommerce.customer.infrastructure.messaging;
+
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.kafka.support.KafkaHeaders;
+import org.springframework.messaging.Message;
+import org.springframework.messaging.support.MessageBuilder;
+import org.springframework.stereotype.Component;
+
+import com.ecommerce.customer.event.CustomerCreatedEvent;
+
+@Component
+@RequiredArgsConstructor
+@Slf4j
+public class CustomerEventPublisher {
+    
+    private final KafkaTemplate<String, Object> kafkaTemplate;
+    
+    @Value("${spring.kafka.topics.customer-created}")
+    private String customerCreatedTopic;
+    
+    public void publishCustomerCreatedEvent(CustomerCreatedEvent event) {
+        try {
+            Message<CustomerCreatedEvent> message = MessageBuilder
+                    .withPayload(event)
+                    .setHeader(KafkaHeaders.TOPIC, customerCreatedTopic)
+                    .setHeader(KafkaHeaders.KEY, event.getCustomerId().toString())
+                    .build();
+            
+            kafkaTemplate.send(message);
+            log.info("Published CustomerCreatedEvent for customer: {}", event.getCustomerId());
+        } catch (Exception e) {
+            log.error("Failed to publish CustomerCreatedEvent: {}", e.getMessage(), e);
+            // Implement retry logic or dead letter queue here
+        }
+    }
+}
+
+
+/* ==========================================================================
+   FILE: NotificationEventConsumer.java
+   PATH: notification-service\src\main\java\com\ecommerce\notification\infrastructure\messaging\NotificationEventConsumer.java
+   ========================================================================== */
+
+package com.ecommerce.notification.infrastructure.messaging;
+
+import com.ecommerce.customer.application.event.CustomerCreatedEvent;
+import com.ecommerce.order.application.event.OrderCreatedEvent;
+import com.ecommerce.order.application.event.OrderStatusChangedEvent;
+import com.ecommerce.notification.application.service.NotificationService;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.kafka.annotation.KafkaListener;
+import org.springframework.messaging.handler.annotation.Payload;
+import org.springframework.stereotype.Component;
+
+@Component
+@RequiredArgsConstructor
+@Slf4j
+public class NotificationEventConsumer {
+    
+    private final NotificationService notificationService;
+    
+    @KafkaListener(
+            topics = "${spring.kafka.topics.customer-created}",
+            groupId = "${spring.kafka.consumer.group-id}"
+    )
+    public void handleCustomerCreatedEvent(@Payload CustomerCreatedEvent event) {
+        log.info("Received CustomerCreatedEvent for customer: {}", event.getCustomerId());
+        
+        // Send welcome email
+        notificationService.sendWelcomeEmail(
+                event.getCustomerId(),
+                event.getEmail(),
+                event.getFirstName() + " " + event.getLastName()
+        );
+    }
+    
+    @KafkaListener(
+            topics = "${spring.kafka.topics.order-created}",
+            groupId = "${spring.kafka.consumer.group-id}"
+    )
+    public void handleOrderCreatedEvent(@Payload OrderCreatedEvent event) {
+        log.info("Received OrderCreatedEvent for order: {}", event.getOrderId());
+        
+        // Send order confirmation
+        notificationService.sendOrderConfirmation(
+                event.getOrderId(),
+                event.getCustomerId(),
+                event.getTotalAmount()
+        );
+    }
+    
+    @KafkaListener(
+            topics = "${spring.kafka.topics.order-status-changed}",
+            groupId = "${spring.kafka.consumer.group-id}"
+    )
+    public void handleOrderStatusChangedEvent(@Payload OrderStatusChangedEvent event) {
+        log.info("Received OrderStatusChangedEvent for order: {}", event.getOrderId());
+        
+        // Send status update notification
+        notificationService.sendOrderStatusUpdate(
+                event.getOrderId(),
+                event.getOldStatus(),
+                event.getNewStatus()
+        );
+    }
+}
+
+
+/* ==========================================================================
+   FILE: PaymentEventConsumer.java
+   PATH: payment-service\src\main\java\com\ecommerce\payment\infrastructure\messaging\PaymentEventConsumer.java
+   ========================================================================== */
+
+package com.ecommerce.payment.infrastructure.messaging;
+
+import com.ecommerce.payment.application.service.PaymentService;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.kafka.annotation.KafkaListener;
+import org.springframework.messaging.handler.annotation.Payload;
+import org.springframework.stereotype.Component;
+
+@Component
+@RequiredArgsConstructor
+@Slf4j
+public class PaymentEventConsumer {
+
+    private final PaymentService paymentService;
+
+    @KafkaListener(
+            topics = "${spring.kafka.topics.order-created}",
+            groupId = "${spring.kafka.consumer.group-id}"
+    )
+    public void handleOrderCreatedEvent(@Payload OrderCreatedEvent event) {
+        log.info("Received OrderCreatedEvent for order: {}", event.getOrderId());
+
+        try {
+            paymentService.createPendingPayment(
+                    event.getOrderId(),
+                    event.getCustomerId(),
+                    event.getTotalAmount(),
+                    event.getTimestamp()
+            );
+            log.info("Created pending payment for order: {}", event.getOrderId());
+        } catch (Exception e) {
+            log.error("Failed to create payment for order {}: {}", event.getOrderId(), e.getMessage());
+            // Tương tự, nếu lỗi thanh toán khởi tạo, cần ném exception
+            // để Kafka xử lý lại hoặc hệ thống Saga kích hoạt luồng bồi hoàn (Compensating Transaction)
+            throw new RuntimeException("Payment creation failed", e);
+        }
+    }
+}
+
+
+/* ==========================================================================
+   FILE: ProductEventConsumer.java
+   PATH: product-service\src\main\java\com\ecommerce\product\infrastructure\messaging\ProductEventConsumer.java
+   ========================================================================== */
+
+package com.ecommerce.product.infrastructure.messaging;
+
+import com.ecommerce.product.application.service.ProductService;
+import com.ecommerce.product.common.event.OrderCreatedEvent;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.kafka.annotation.KafkaListener;
+import org.springframework.messaging.handler.annotation.Payload;
+import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Transactional;
+
+@Component
+@RequiredArgsConstructor
+@Slf4j
+public class ProductEventConsumer {
+
+    private final ProductService productService;
+
+    @KafkaListener(
+            topics = "${spring.kafka.topics.order-created}",
+            groupId = "${spring.kafka.consumer.group-id}"
+    )
+    @Transactional // Quan trọng: Đảm bảo toàn bộ việc trừ kho nằm trong 1 transaction DB
+    public void handleOrderCreatedEvent(@Payload OrderCreatedEvent event) {
+        log.info("Received OrderCreatedEvent for order: {}", event.getOrderId());
+
+        try {
+            // Xử lý tuần tự, nếu 1 cái lỗi sẽ nhảy xuống catch
+            for (var item : event.getItems()) {
+                productService.reserveStock(item.getProductId(), item.getQuantity());
+                log.info("Reserved {} units of product: {}", item.getQuantity(), item.getProductId());
+            }
+        } catch (Exception e) {
+            log.error("Failed to reserve stock for order {}. Rolling back transaction.", event.getOrderId(), e);
+            
+            // QUAN TRỌNG: Phải ném lỗi ra ngoài để Transaction Manager rollback lại các item đã trừ trước đó.
+            // Nếu nuốt lỗi (try-catch mà không throw), transaction sẽ commit -> sai lệch kho.
+            // Việc ném lỗi cũng giúp Kafka biết message này xử lý thất bại để retry hoặc đưa vào Dead Letter Queue.
+            throw new RuntimeException("Stock reservation failed", e);
+        }
+    }
+}

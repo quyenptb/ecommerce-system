@@ -1,0 +1,59 @@
+
+
+/* ==========================================================================
+   FILE: CustomerNotFoundException.java
+   PATH: customer-service\src\main\java\com\ecommerce\customer\domain\exception\CustomerNotFoundException.java
+   ========================================================================== */
+
+package com.ecommerce.customer.domain.exception;
+
+import org.springframework.http.HttpStatus;
+import org.springframework.web.bind.annotation.ResponseStatus;
+import java.util.UUID;
+
+
+@ResponseStatus(HttpStatus.NOT_FOUND)
+public class CustomerNotFoundException extends RuntimeException {
+    public CustomerNotFoundException(UUID id) {
+        super("Customer not found with id: " + id);
+    }
+}
+
+
+/* ==========================================================================
+   FILE: DuplicateEmailException.java
+   PATH: customer-service\src\main\java\com\ecommerce\customer\domain\exception\DuplicateEmailException.java
+   ========================================================================== */
+
+package com.ecommerce.customer.domain.exception;
+
+import org.springframework.http.HttpStatus;
+import org.springframework.web.bind.annotation.ResponseStatus;
+import java.util.UUID;
+
+
+@ResponseStatus(HttpStatus.CONFLICT)
+public class DuplicateEmailException extends RuntimeException {
+    public DuplicateEmailException(String message) {
+        super(message);
+    }
+}
+
+
+/* ==========================================================================
+   FILE: OrderNotFoundException.java
+   PATH: order-service\src\main\java\com\ecommerce\order\domain\exception\OrderNotFoundException.java
+   ========================================================================== */
+
+package com.ecommerce.order.domain.exception;
+
+import org.springframework.http.HttpStatus;
+import org.springframework.web.bind.annotation.ResponseStatus;
+import java.util.UUID;
+
+@ResponseStatus(HttpStatus.NOT_FOUND)
+public class OrderNotFoundException extends RuntimeException {
+    public OrderNotFoundException(UUID id) {
+        super("Order not found with id: " + id);
+    }
+}

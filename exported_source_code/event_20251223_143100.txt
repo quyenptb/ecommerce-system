@@ -1,0 +1,180 @@
+
+
+/* ==========================================================================
+   FILE: CustomerCreatedEvent.java
+   PATH: customer-service\src\main\java\com\ecommerce\customer\event\CustomerCreatedEvent.java
+   ========================================================================== */
+
+package com.ecommerce.customer.event;
+
+import lombok.AllArgsConstructor;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+import java.time.LocalDateTime;
+import java.util.UUID;
+
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+public class CustomerCreatedEvent {
+    private UUID customerId;
+    private String email;
+    private String firstName;
+    private String lastName;
+    private LocalDateTime timestamp = LocalDateTime.now();
+}
+
+
+/* ==========================================================================
+   FILE: OrderCreatedEvent.java
+   PATH: order-service\src\main\java\com\ecommerce\order\application\event\OrderCreatedEvent.java
+   ========================================================================== */
+
+package com.ecommerce.order.application.event;
+
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+import lombok.RequiredArgsConstructor;
+
+import java.math.BigDecimal;
+import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.UUID;
+
+import com.ecommerce.order.domain.model.OrderItem;
+
+
+@Data
+@AllArgsConstructor
+@RequiredArgsConstructor
+@Builder
+public class OrderCreatedEvent {
+    private UUID id;
+    private UUID customerId;
+    private BigDecimal totalAmount;
+    private String shippingAddress;
+    private String billingAddress;
+    private List<OrderItemEvent> items = new ArrayList<>();
+    
+}
+
+
+
+
+
+
+
+/*
+package com.ecommerce.customer.event;
+
+import lombok.AllArgsConstructor;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+import java.time.LocalDateTime;
+import java.util.UUID;
+
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+public class CustomerCreatedEvent {
+    private UUID customerId;
+    private String email;
+    private String firstName;
+    private String lastName;
+    private LocalDateTime timestamp = LocalDateTime.now();
+}
+ */
+
+
+/* ==========================================================================
+   FILE: OrderItemEvent.java
+   PATH: order-service\src\main\java\com\ecommerce\order\application\event\OrderItemEvent.java
+   ========================================================================== */
+
+package com.ecommerce.order.application.event;
+import lombok.AllArgsConstructor;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+import java.math.BigDecimal;
+import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.UUID;
+
+import com.ecommerce.order.domain.model.OrderItem;
+
+
+@Data
+@AllArgsConstructor
+public class OrderItemEvent {
+    private UUID productId;
+    private String sku;
+    private Integer quantity;
+    private BigDecimal unitPrice;
+    private String productName;
+}
+
+
+
+/* ==========================================================================
+   FILE: OrderStatusChangedEvent.java
+   PATH: order-service\src\main\java\com\ecommerce\order\application\event\OrderStatusChangedEvent.java
+   ========================================================================== */
+
+package com.ecommerce.order.application.event;
+
+import java.time.LocalDateTime;
+import java.util.UUID;
+
+import com.ecommerce.order.domain.model.Order;
+
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.RequiredArgsConstructor;
+
+@Data
+@RequiredArgsConstructor
+@AllArgsConstructor
+@Builder
+public class OrderStatusChangedEvent {
+    private UUID orderId;
+    private Order.OrderStatus oldStatus;
+    private Order.OrderStatus newStatus;
+    private LocalDateTime createdAt;
+    
+}
+
+
+
+/* ==========================================================================
+   FILE: ProductInventoryUpdatedEvent.java
+   PATH: product-service\src\main\java\com\ecommerce\product\application\event\ProductInventoryUpdatedEvent.java
+   ========================================================================== */
+
+package com.ecommerce.product.application.event;
+
+import lombok.AllArgsConstructor;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+import java.math.BigDecimal;
+import java.util.UUID;
+
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+public class ProductInventoryUpdatedEvent {
+    private UUID productId;
+    private String sku;
+    private Integer oldQuantity;
+    private Integer newQuantity;
+    private BigDecimal price;
+    private String eventType = "INVENTORY_UPDATED";
+}

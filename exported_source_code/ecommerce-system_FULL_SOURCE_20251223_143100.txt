@@ -1,0 +1,2483 @@
+
+
+/* ==========================================================================
+   FILE: ApiGatewayApplication.java
+   PATH: api-gateway\src\main\java\com\ecommerce\gateway\ApiGatewayApplication.java
+   ========================================================================== */
+
+package com.ecommerce.gateway;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.cloud.client.discovery.EnableDiscoveryClient;
+
+@SpringBootApplication
+@EnableDiscoveryClient
+public class ApiGatewayApplication {
+    public static void main(String[] args) {
+        SpringApplication.run(ApiGatewayApplication.class, args);
+    }
+}
+
+
+/* ==========================================================================
+   FILE: application.yml
+   PATH: api-gateway\src\main\resources\application.yml
+   ========================================================================== */
+
+server:
+  port: 8080
+
+spring:
+  application:
+    name: api-gateway
+  cloud:
+    gateway:
+      discovery:
+        locator:
+          enabled: true
+          lower-case-service-id: true
+      routes:
+        - id: customer-service
+          uri: lb://customer-service
+          predicates:
+            - Path=/api/customers/**
+          filters:
+            - name: CircuitBreaker
+              args:
+                name: customerService
+                fallbackUri: forward:/fallback/customer
+        - id: product-service
+          uri: lb://product-service
+          predicates:
+            - Path=/api/products/**
+        - id: order-service
+          uri: lb://order-service
+          predicates:
+            - Path=/api/orders/**
+        - id: payment-service
+          uri: lb://payment-service
+          predicates:
+            - Path=/api/payments/**
+      default-filters:
+        - name: RequestRateLimiter
+          args:
+            redis-rate-limiter.replenishRate: 10
+            redis-rate-limiter.burstCapacity: 20
+            key-resolver: "#{@userKeyResolver}"
+        - name: Retry
+          args:
+            retries: 3
+            series: SERVER_ERROR
+
+eureka:
+  client:
+    service-url:
+      defaultZone: http://admin:admin123@localhost:8761/eureka/
+  instance:
+    prefer-ip-address: true
+
+resilience4j:
+  circuitbreaker:
+    instances:
+      customerService:
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 5s
+        permitted-number-of-calls-in-half-open-state: 3
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,gateway
+  tracing:
+    sampling:
+      probability: 1.0
+
+
+/* ==========================================================================
+   FILE: application-common.yml
+   PATH: application-common.yml
+   ========================================================================== */
+
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/${service.name}
+    username: admin
+    password: admin123
+    hikari:
+      maximum-pool-size: 10
+      minimum-idle: 5
+      connection-timeout: 30000
+      idle-timeout: 600000
+      max-lifetime: 1800000
+  
+  jpa:
+    hibernate:
+      ddl-auto: update
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        format_sql: true
+    show-sql: false
+  
+  kafka:
+    bootstrap-servers: localhost:9092
+    consumer:
+      group-id: ${spring.application.name}-group
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      properties:
+        spring.json.trusted.packages: "*"
+        spring.json.value.default.type: java.lang.Object
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      properties:
+        acks: all
+        retries: 3
+    topics:
+      customer-created: customer.created
+      order-created: order.created
+      order-status-changed: order.status.changed
+      payment-processed: payment.processed
+      inventory-updated: inventory.updated
+  
+  redis:
+    host: localhost
+    port: 6379
+    password: redis123
+    timeout: 2000ms
+
+resilience4j:
+  circuitbreaker:
+    instances:
+      default:
+        sliding-window-size: 10
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 5s
+  retry:
+    instances:
+      default:
+        max-attempts: 3
+        wait-duration: 1s
+
+logging:
+  level:
+    com.ecommerce: DEBUG
+    org.springframework.web: INFO
+    org.hibernate.SQL: WARN
+    org.hibernate.type.descriptor.sql.BasicBinder: WARN
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} - %msg%n"
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: always
+  metrics:
+    export:
+      prometheus:
+        enabled: true
+  tracing:
+    sampling:
+      probability: 1.0
+
+
+/* ==========================================================================
+   FILE: CustomerMapper.java
+   PATH: customer-service\src\main\java\com\ecommerce\customer\application\mapper\CustomerMapper.java
+   ========================================================================== */
+
+package com.ecommerce.customer.application.mapper;
+
+import com.ecommerce.customer.domain.model.Customer;
+import com.ecommerce.customer.interfaces.rest.dto.CustomerDTO;
+import com.ecommerce.customer.interfaces.rest.dto.UpdateCustomerRequest;
+import org.springframework.stereotype.Component;
+
+@Component
+public class CustomerMapper {
+
+    public CustomerDTO toDTO(Customer customer) {
+        if (customer == null) return null;
+        
+        return CustomerDTO.builder()
+                .id(customer.getId())
+                .email(customer.getEmail())
+                .firstName(customer.getFirstName())
+                .lastName(customer.getLastName())
+                .phone(customer.getPhone())
+                .address(customer.getAddress())
+                .isActive(customer.isActive())
+                .loyaltyPoints(customer.getLoyaltyPoints())
+                .build();
+    }
+
+    public void updateCustomerFromRequest(UpdateCustomerRequest request, Customer customer) {
+        if (request == null || customer == null) return;
+
+        if (request.getFirstName() != null) customer.setFirstName(request.getFirstName());
+        if (request.getLastName() != null) customer.setLastName(request.getLastName());
+        if (request.getPhone() != null) customer.setPhone(request.getPhone());
+        if (request.getAddress() != null) customer.setAddress(request.getAddress());
+    }
+}
+
+
+/* ==========================================================================
+   FILE: CustomerService.java
+   PATH: customer-service\src\main\java\com\ecommerce\customer\application\service\CustomerService.java
+   ========================================================================== */
+
+package com.ecommerce.customer.application.service;
+
+import com.ecommerce.customer.domain.model.Customer;
+import com.ecommerce.customer.domain.repository.CustomerRepository;
+import com.ecommerce.customer.event.CustomerCreatedEvent;
+import com.ecommerce.customer.interfaces.rest.dto.CustomerDTO;
+import com.ecommerce.customer.interfaces.rest.dto.CreateCustomerRequest;
+import com.ecommerce.customer.interfaces.rest.dto.UpdateCustomerRequest;
+import com.ecommerce.customer.domain.exception.CustomerNotFoundException;
+import com.ecommerce.customer.domain.exception.DuplicateEmailException;
+import com.ecommerce.customer.application.mapper.CustomerMapper;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.time.LocalDateTime;
+import java.util.UUID;
+
+@Service
+@RequiredArgsConstructor
+@Slf4j
+public class CustomerService {
+    
+    private final CustomerRepository customerRepository;
+    private final CustomerMapper customerMapper;
+    private final PasswordEncoder passwordEncoder;
+    private final ApplicationEventPublisher eventPublisher;
+    
+    @Transactional
+    public CustomerDTO createCustomer(CreateCustomerRequest request) {
+        log.info("Creating customer with email: {}", request.getEmail());
+        
+        if (customerRepository.existsByEmail(request.getEmail())) {
+            throw new DuplicateEmailException("Email already exists: " + request.getEmail());
+        }
+        
+        Customer customer = Customer.builder()
+                .email(request.getEmail())
+                .password(passwordEncoder.encode(request.getPassword()))
+                .firstName(request.getFirstName())
+                .lastName(request.getLastName())
+                .phone(request.getPhone())
+                .address(request.getAddress())
+                .isActive(true)
+                .build();
+        
+        Customer savedCustomer = customerRepository.save(customer);
+        
+        // Publish domain event
+        eventPublisher.publishEvent(new CustomerCreatedEvent(
+                savedCustomer.getId(),
+                savedCustomer.getEmail(),
+                savedCustomer.getFirstName(),
+                savedCustomer.getLastName(),
+                LocalDateTime.now()
+        ));
+        
+        log.info("Customer created successfully with id: {}", savedCustomer.getId());
+        return customerMapper.toDTO(savedCustomer);
+    }
+    
+    @Transactional(readOnly = true)
+    public CustomerDTO getCustomer(UUID customerId) {
+        log.debug("Fetching customer with id: {}", customerId);
+        Customer customer = customerRepository.findById(customerId)
+                .orElseThrow(() -> new CustomerNotFoundException(customerId));
+        return customerMapper.toDTO(customer);
+    }
+    
+    @Transactional
+    public CustomerDTO updateCustomer(UUID customerId, UpdateCustomerRequest request) {
+        log.info("Updating customer with id: {}", customerId);
+        
+        Customer customer = customerRepository.findById(customerId)
+                .orElseThrow(() -> new CustomerNotFoundException(customerId));
+        
+        customerMapper.updateCustomerFromRequest(request, customer);
+        Customer updatedCustomer = customerRepository.save(customer);
+        
+        log.info("Customer updated successfully with id: {}", customerId);
+        return customerMapper.toDTO(updatedCustomer);
+    }
+    
+    @Transactional
+    public void deactivateCustomer(UUID customerId) {
+        log.info("Deactivating customer with id: {}", customerId);
+        
+        Customer customer = customerRepository.findById(customerId)
+                .orElseThrow(() -> new CustomerNotFoundException(customerId));
+        
+        customer.setActive(false);
+        customerRepository.save(customer);
+        
+        log.info("Customer deactivated successfully with id: {}", customerId);
+    }
+    
+    @Transactional(readOnly = true)
+    public boolean validateCredentials(String email, String password) {
+        return customerRepository.findActiveByEmail(email)
+                .map(customer -> passwordEncoder.matches(password, customer.getPassword()))
+                .orElse(false);
+    }
+}
+
+
+/* ==========================================================================
+   FILE: CustomerServiceApplication.java
+   PATH: customer-service\src\main\java\com\ecommerce\customer\CustomerServiceApplication.java
+   ========================================================================== */
+
+package com.ecommerce.customer;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.cloud.client.discovery.EnableDiscoveryClient;
+import org.springframework.data.jpa.repository.config.EnableJpaAuditing;
+
+@SpringBootApplication
+@EnableDiscoveryClient
+@EnableJpaAuditing
+public class CustomerServiceApplication {
+    public static void main(String[] args) {
+        SpringApplication.run(CustomerServiceApplication.class, args);
+    }
+}
+
+
+/* ==========================================================================
+   FILE: CustomerNotFoundException.java
+   PATH: customer-service\src\main\java\com\ecommerce\customer\domain\exception\CustomerNotFoundException.java
+   ========================================================================== */
+
+package com.ecommerce.customer.domain.exception;
+
+import org.springframework.http.HttpStatus;
+import org.springframework.web.bind.annotation.ResponseStatus;
+import java.util.UUID;
+
+
+@ResponseStatus(HttpStatus.NOT_FOUND)
+public class CustomerNotFoundException extends RuntimeException {
+    public CustomerNotFoundException(UUID id) {
+        super("Customer not found with id: " + id);
+    }
+}
+
+
+/* ==========================================================================
+   FILE: DuplicateEmailException.java
+   PATH: customer-service\src\main\java\com\ecommerce\customer\domain\exception\DuplicateEmailException.java
+   ========================================================================== */
+
+package com.ecommerce.customer.domain.exception;
+
+import org.springframework.http.HttpStatus;
+import org.springframework.web.bind.annotation.ResponseStatus;
+import java.util.UUID;
+
+
+@ResponseStatus(HttpStatus.CONFLICT)
+public class DuplicateEmailException extends RuntimeException {
+    public DuplicateEmailException(String message) {
+        super(message);
+    }
+}
+
+
+/* ==========================================================================
+   FILE: Customer.java
+   PATH: customer-service\src\main\java\com\ecommerce\customer\domain\model\Customer.java
+   ========================================================================== */
+
+package com.ecommerce.customer.domain.model;
+
+import jakarta.persistence.*;
+import lombok.*;
+import org.springframework.data.annotation.CreatedDate;
+import org.springframework.data.annotation.LastModifiedDate;
+import org.springframework.data.jpa.domain.support.AuditingEntityListener;
+
+import java.time.LocalDateTime;
+import java.util.UUID;
+
+@Entity
+@Table(name = "customers")
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
+@EntityListeners(AuditingEntityListener.class)
+public class Customer {
+    
+    @Id
+    @GeneratedValue(strategy = GenerationType.UUID)
+    private UUID id;
+    
+    @Column(nullable = false, unique = true)
+    private String email;
+    
+    @Column(nullable = false)
+    private String password;
+    
+    @Column(name = "first_name", nullable = false)
+    private String firstName;
+    
+    @Column(name = "last_name", nullable = false)
+    private String lastName;
+    
+    @Column(unique = true)
+    private String phone;
+    
+    @Embedded
+    private Address address;
+    
+    @Column(name = "is_active")
+    private boolean isActive = true;
+    
+    @Column(name = "email_verified")
+    private boolean emailVerified = false;
+    
+    @Column(name = "loyalty_points")
+    private int loyaltyPoints = 0;
+    
+    @CreatedDate
+    @Column(name = "created_at", updatable = false)
+    private LocalDateTime createdAt;
+    
+    @LastModifiedDate
+    @Column(name = "updated_at")
+    private LocalDateTime updatedAt;
+    
+    @Version
+    private Long version;
+    
+    @Embeddable
+    @Data
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @Builder
+    public static class Address {
+        private String street;
+        private String city;
+        private String state;
+        private String country;
+        private String zipCode;
+    }
+}
+
+
+/* ==========================================================================
+   FILE: CustomerRepository.java
+   PATH: customer-service\src\main\java\com\ecommerce\customer\domain\repository\CustomerRepository.java
+   ========================================================================== */
+
+package com.ecommerce.customer.domain.repository;
+
+import com.ecommerce.customer.domain.model.Customer;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
+import org.springframework.stereotype.Repository;
+
+import java.util.Optional;
+import java.util.UUID;
+
+@Repository
+public interface CustomerRepository extends JpaRepository<Customer, UUID> {
+    
+    Optional<Customer> findByEmail(String email);
+    
+    boolean existsByEmail(String email);
+    
+    boolean existsByPhone(String phone);
+    
+    @Query("SELECT c FROM Customer c WHERE c.email = :email AND c.isActive = true")
+    Optional<Customer> findActiveByEmail(@Param("email") String email);
+}
+
+
+/* ==========================================================================
+   FILE: CustomerCreatedEvent.java
+   PATH: customer-service\src\main\java\com\ecommerce\customer\event\CustomerCreatedEvent.java
+   ========================================================================== */
+
+package com.ecommerce.customer.event;
+
+import lombok.AllArgsConstructor;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+import java.time.LocalDateTime;
+import java.util.UUID;
+
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+public class CustomerCreatedEvent {
+    private UUID customerId;
+    private String email;
+    private String firstName;
+    private String lastName;
+    private LocalDateTime timestamp = LocalDateTime.now();
+}
+
+
+/* ==========================================================================
+   FILE: CustomerDomainEventAdapter.java
+   PATH: customer-service\src\main\java\com\ecommerce\customer\infrastructure\messaging\CustomerDomainEventAdapter.java
+   ========================================================================== */
+
+package com.ecommerce.customer.infrastructure.messaging;
+
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Component;
+import org.springframework.transaction.event.TransactionPhase;
+import org.springframework.transaction.event.TransactionalEventListener;
+
+import com.ecommerce.customer.event.CustomerCreatedEvent;
+
+@Component
+@RequiredArgsConstructor
+@Slf4j
+public class CustomerDomainEventAdapter {
+
+    private final CustomerEventPublisher kafkaPublisher;
+
+    // @TransactionalEventListener đảm bảo chỉ bắn Kafka KHI transaction DB đã commit thành công.
+    // Nếu lưu DB thất bại, event này sẽ không được bắn -> Đảm bảo tính nhất quán.
+    @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
+    public void handleCustomerCreatedEvent(CustomerCreatedEvent event) {
+        log.info("Domain event received: CustomerCreatedEvent for ID: {}. Forwarding to Kafka...", event.getCustomerId());
+        kafkaPublisher.publishCustomerCreatedEvent(event);
+    }
+}
+
+
+/* ==========================================================================
+   FILE: CustomerEventPublisher.java
+   PATH: customer-service\src\main\java\com\ecommerce\customer\infrastructure\messaging\CustomerEventPublisher.java
+   ========================================================================== */
+
+package com.ecommerce.customer.infrastructure.messaging;
+
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.kafka.support.KafkaHeaders;
+import org.springframework.messaging.Message;
+import org.springframework.messaging.support.MessageBuilder;
+import org.springframework.stereotype.Component;
+
+import com.ecommerce.customer.event.CustomerCreatedEvent;
+
+@Component
+@RequiredArgsConstructor
+@Slf4j
+public class CustomerEventPublisher {
+    
+    private final KafkaTemplate<String, Object> kafkaTemplate;
+    
+    @Value("${spring.kafka.topics.customer-created}")
+    private String customerCreatedTopic;
+    
+    public void publishCustomerCreatedEvent(CustomerCreatedEvent event) {
+        try {
+            Message<CustomerCreatedEvent> message = MessageBuilder
+                    .withPayload(event)
+                    .setHeader(KafkaHeaders.TOPIC, customerCreatedTopic)
+                    .setHeader(KafkaHeaders.KEY, event.getCustomerId().toString())
+                    .build();
+            
+            kafkaTemplate.send(message);
+            log.info("Published CustomerCreatedEvent for customer: {}", event.getCustomerId());
+        } catch (Exception e) {
+            log.error("Failed to publish CustomerCreatedEvent: {}", e.getMessage(), e);
+            // Implement retry logic or dead letter queue here
+        }
+    }
+}
+
+
+/* ==========================================================================
+   FILE: CustomerController.java
+   PATH: customer-service\src\main\java\com\ecommerce\customer\interfaces\rest\CustomerController.java
+   ========================================================================== */
+
+package com.ecommerce.customer.interfaces.rest;
+
+import com.ecommerce.customer.application.service.CustomerService;
+import com.ecommerce.customer.interfaces.rest.dto.*;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.validation.Valid;
+import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+
+import java.util.UUID;
+
+@RestController
+@RequestMapping("/api/customers")
+@RequiredArgsConstructor
+@Tag(name = "Customer Management", description = "APIs for managing customers")
+public class CustomerController {
+    
+    private final CustomerService customerService;
+    
+    @PostMapping
+    @Operation(summary = "Create a new customer")
+    public ResponseEntity<CustomerDTO> createCustomer(@Valid @RequestBody CreateCustomerRequest request) {
+        CustomerDTO customerDTO = customerService.createCustomer(request);
+        return ResponseEntity.status(HttpStatus.CREATED).body(customerDTO);
+    }
+    
+    @GetMapping("/{customerId}")
+    @Operation(summary = "Get customer by ID")
+    public ResponseEntity<CustomerDTO> getCustomer(@PathVariable UUID customerId) {
+        CustomerDTO customerDTO = customerService.getCustomer(customerId);
+        return ResponseEntity.ok(customerDTO);
+    }
+    
+    @PutMapping("/{customerId}")
+    @Operation(summary = "Update customer")
+    public ResponseEntity<CustomerDTO> updateCustomer(
+            @PathVariable UUID customerId,
+            @Valid @RequestBody UpdateCustomerRequest request) {
+        CustomerDTO customerDTO = customerService.updateCustomer(customerId, request);
+        return ResponseEntity.ok(customerDTO);
+    }
+    
+    @DeleteMapping("/{customerId}")
+    @Operation(summary = "Deactivate customer")
+    public ResponseEntity<Void> deactivateCustomer(@PathVariable UUID customerId) {
+        customerService.deactivateCustomer(customerId);
+        return ResponseEntity.noContent().build();
+    }
+}
+
+
+/* ==========================================================================
+   FILE: CreateCustomerRequest.java
+   PATH: customer-service\src\main\java\com\ecommerce\customer\interfaces\rest\dto\CreateCustomerRequest.java
+   ========================================================================== */
+
+package com.ecommerce.customer.interfaces.rest.dto;
+
+import com.ecommerce.customer.domain.model.Customer.Address;
+import jakarta.validation.constraints.Email;
+import jakarta.validation.constraints.NotBlank;
+import lombok.Data;
+
+@Data
+public class CreateCustomerRequest {
+    @NotBlank(message = "Email is required")
+    @Email(message = "Email is not valid")
+    private String email;
+
+    @NotBlank(message = "Password is required")
+    private String password;
+
+    @NotBlank(message = "First name is required")
+    private String firstName;
+
+    @NotBlank(message = "Last name is required")
+    private String lastName;
+
+    private String phone;
+    
+    private Address address;
+}
+
+
+/* ==========================================================================
+   FILE: CustomerDTO.java
+   PATH: customer-service\src\main\java\com\ecommerce\customer\interfaces\rest\dto\CustomerDTO.java
+   ========================================================================== */
+
+package com.ecommerce.customer.interfaces.rest.dto;
+
+import com.ecommerce.customer.domain.model.Customer.Address;
+import lombok.Builder;
+import lombok.Data;
+import java.util.UUID;
+
+@Data
+@Builder
+public class CustomerDTO {
+    private UUID id;
+    private String email;
+    private String firstName;
+    private String lastName;
+    private String phone;
+    private Address address;
+    private boolean isActive;
+    private int loyaltyPoints;
+}
+
+
+/* ==========================================================================
+   FILE: UpdateCustomerRequest.java
+   PATH: customer-service\src\main\java\com\ecommerce\customer\interfaces\rest\dto\UpdateCustomerRequest.java
+   ========================================================================== */
+
+package com.ecommerce.customer.interfaces.rest.dto;
+
+import com.ecommerce.customer.domain.model.Customer.Address;
+import lombok.Data;
+
+@Data
+public class UpdateCustomerRequest {
+    private String firstName;
+    private String lastName;
+    private String phone;
+    private Address address;
+}
+
+
+/* ==========================================================================
+   FILE: docker-compose.yml
+   PATH: docker-compose.yml
+   ========================================================================== */
+
+version: '3.8'
+
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.4.0
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+
+  kafka:
+    image: confluentinc/cp-kafka:7.4.0
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: ecommerce
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: admin123
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: redis-server --requirepass redis123
+
+  elasticsearch:
+    image: elasticsearch:8.11.0
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+    ports:
+      - "9200:9200"
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+
+  kibana:
+    image: elastic/kibana:8.11.0
+    ports:
+      - "5601:5601"
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+    depends_on:
+      - elasticsearch
+
+volumes:
+  postgres_data:
+  elasticsearch_data:
+
+
+/* ==========================================================================
+   FILE: InventoryService.java
+   PATH: inventory-service\src\main\java\com\ecommerce\inventory\application\service\InventoryService.java
+   ========================================================================== */
+
+package com.ecommerce.inventory.application.service;
+
+import com.ecommerce.inventory.domain.model.Inventory;
+import com.ecommerce.inventory.domain.repository.InventoryRepository;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.util.UUID;
+
+@Service
+@RequiredArgsConstructor
+@Slf4j
+public class InventoryService {
+
+    private final InventoryRepository inventoryRepository;
+
+    @Transactional(readOnly = true)
+    public boolean isInStock(String sku) {
+        return inventoryRepository.findBySku(sku)
+                .map(inventory -> inventory.getStockStatus() == Inventory.StockStatus.IN_STOCK)
+                .orElse(false);
+    }
+
+    @Transactional
+    public void updateStock(UUID productId, int quantity) {
+        Inventory inventory = inventoryRepository.findByProductId(productId)
+                .orElseThrow(() -> new RuntimeException("Inventory not found for product: " + productId));
+        
+        inventory.updateStock(quantity);
+        inventoryRepository.save(inventory);
+        log.info("Updated stock for product {} to {}", productId, quantity);
+    }
+}
+
+
+/* ==========================================================================
+   FILE: Inventory.java
+   PATH: inventory-service\src\main\java\com\ecommerce\inventory\domain\model\Inventory.java
+   ========================================================================== */
+
+package com.ecommerce.inventory.domain.model;
+
+import jakarta.persistence.*;
+import lombok.*;
+import org.springframework.data.annotation.CreatedDate;
+import org.springframework.data.annotation.LastModifiedDate;
+import org.springframework.data.jpa.domain.support.AuditingEntityListener;
+
+import java.time.LocalDateTime;
+import java.util.UUID;
+
+@Entity
+@Table(name = "inventory", 
+       uniqueConstraints = @UniqueConstraint(columnNames = {"product_id", "sku"}))
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
+@EntityListeners(AuditingEntityListener.class)
+public class Inventory {
+    
+    @Id
+    @GeneratedValue(strategy = GenerationType.UUID)
+    private UUID id;
+    
+    @Column(name = "product_id", nullable = false)
+    private UUID productId;
+    
+    @Column(nullable = false)
+    private String sku;
+    
+    @Column(nullable = false)
+    private Integer quantity;
+    
+    @Column(name = "reserved_quantity")
+    @Builder.Default
+    private Integer reservedQuantity = 0;
+    
+    @Column(name = "available_quantity")
+    private Integer availableQuantity;
+    
+    @Column(name = "low_stock_threshold")
+    private Integer lowStockThreshold = 10;
+    
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false)
+    private StockStatus stockStatus;
+    
+    @CreatedDate
+    @Column(name = "created_at", updatable = false)
+    private LocalDateTime createdAt;
+    
+    @LastModifiedDate
+    @Column(name = "updated_at")
+    private LocalDateTime updatedAt;
+    
+    @Version
+    private Long version;
+    
+    @PrePersist
+    @PreUpdate
+    private void calculateAvailableQuantity() {
+        this.availableQuantity = Math.max(0, this.quantity - this.reservedQuantity);
+        updateStockStatus();
+    }
+    
+    private void updateStockStatus() {
+        if (quantity <= 0) {
+            stockStatus = StockStatus.OUT_OF_STOCK;
+        } else if (availableQuantity <= lowStockThreshold) {
+            stockStatus = StockStatus.LOW_STOCK;
+        } else {
+            stockStatus = StockStatus.IN_STOCK;
+        }
+    }
+    
+    public boolean reserveStock(int quantity) {
+        if (availableQuantity >= quantity) {
+            this.reservedQuantity += quantity;
+            calculateAvailableQuantity();
+            return true;
+        }
+        return false;
+    }
+    
+    public boolean releaseStock(int quantity) {
+        if (this.reservedQuantity >= quantity) {
+            this.reservedQuantity -= quantity;
+            calculateAvailableQuantity();
+            return true;
+        }
+        return false;
+    }
+    
+    public boolean updateStock(int newQuantity) {
+        if (newQuantity >= 0) {
+            this.quantity = newQuantity;
+            calculateAvailableQuantity();
+            return true;
+        }
+        return false;
+    }
+    
+    public enum StockStatus {
+        IN_STOCK,
+        LOW_STOCK,
+        OUT_OF_STOCK,
+        DISCONTINUED
+    }
+}
+
+
+/* ==========================================================================
+   FILE: InventoryRepository.java
+   PATH: inventory-service\src\main\java\com\ecommerce\inventory\domain\repository\InventoryRepository.java
+   ========================================================================== */
+
+package com.ecommerce.inventory.domain.repository;
+
+import com.ecommerce.inventory.domain.model.Inventory;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.stereotype.Repository;
+
+import java.util.Optional;
+import java.util.UUID;
+
+@Repository
+public interface InventoryRepository extends JpaRepository<Inventory, UUID> {
+    Optional<Inventory> findByProductId(UUID productId);
+    Optional<Inventory> findBySku(String sku);
+}
+
+
+/* ==========================================================================
+   FILE: InventoryApplication.java
+   PATH: inventory-service\src\main\java\com\ecommerce\inventory\InventoryApplication.java
+   ========================================================================== */
+
+package com.ecommerce.inventory;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.cloud.client.discovery.EnableDiscoveryClient;
+
+@SpringBootApplication
+@EnableDiscoveryClient
+public class InventoryApplication {
+    public static void main(String[] args) {
+        SpringApplication.run(InventoryApplication.class, args);
+    }
+}
+
+
+/* ==========================================================================
+   FILE: NotificationApplication.java
+   PATH: notification-service\NotificationApplication.java
+   ========================================================================== */
+
+package com.ecommerce.notification;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.cloud.client.discovery.EnableDiscoveryClient;
+
+@SpringBootApplication
+@EnableDiscoveryClient
+public class NotificationApplication {
+    public static void main(String[] args) {
+        SpringApplication.run(NotificationApplication.class, args);
+    }
+}
+
+
+/* ==========================================================================
+   FILE: NotificationService.java
+   PATH: notification-service\src\main\java\com\ecommerce\notification\application\service\NotificationService.java
+   ========================================================================== */
+
+package com.ecommerce.notification.application.service;
+
+import com.ecommerce.order.domain.model.Order;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Service;
+
+import java.math.BigDecimal;
+import java.util.UUID;
+
+@Service
+@Slf4j
+public class NotificationService {
+
+    public void sendWelcomeEmail(UUID customerId, String email, String fullName) {
+        log.info("==================================================");
+        log.info("SENDING WELCOME EMAIL");
+        log.info("To: {} ({})", fullName, email);
+        log.info("Subject: Welcome to Our E-commerce Platform!");
+        log.info("Body: Dear {}, thank you for registering...", fullName);
+        log.info("==================================================");
+    }
+
+    public void sendOrderConfirmation(UUID orderId, UUID customerId, BigDecimal amount) {
+        log.info("==================================================");
+        log.info("SENDING ORDER CONFIRMATION");
+        log.info("Order ID: {}", orderId);
+        log.info("Customer ID: {}", customerId);
+        log.info("Total Amount: ${}", amount);
+        log.info("==================================================");
+    }
+
+    public void sendOrderStatusUpdate(UUID orderId, Order.OrderStatus oldStatus, Order.OrderStatus newStatus) {
+        log.info("==================================================");
+        log.info("SENDING ORDER STATUS UPDATE");
+        log.info("Order ID: {}", orderId);
+        log.info("Status Change: {} -> {}", oldStatus, newStatus);
+        log.info("==================================================");
+    }
+}
+
+
+/* ==========================================================================
+   FILE: NotificationEventConsumer.java
+   PATH: notification-service\src\main\java\com\ecommerce\notification\infrastructure\messaging\NotificationEventConsumer.java
+   ========================================================================== */
+
+package com.ecommerce.notification.infrastructure.messaging;
+
+import com.ecommerce.customer.application.event.CustomerCreatedEvent;
+import com.ecommerce.order.application.event.OrderCreatedEvent;
+import com.ecommerce.order.application.event.OrderStatusChangedEvent;
+import com.ecommerce.notification.application.service.NotificationService;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.kafka.annotation.KafkaListener;
+import org.springframework.messaging.handler.annotation.Payload;
+import org.springframework.stereotype.Component;
+
+@Component
+@RequiredArgsConstructor
+@Slf4j
+public class NotificationEventConsumer {
+    
+    private final NotificationService notificationService;
+    
+    @KafkaListener(
+            topics = "${spring.kafka.topics.customer-created}",
+            groupId = "${spring.kafka.consumer.group-id}"
+    )
+    public void handleCustomerCreatedEvent(@Payload CustomerCreatedEvent event) {
+        log.info("Received CustomerCreatedEvent for customer: {}", event.getCustomerId());
+        
+        // Send welcome email
+        notificationService.sendWelcomeEmail(
+                event.getCustomerId(),
+                event.getEmail(),
+                event.getFirstName() + " " + event.getLastName()
+        );
+    }
+    
+    @KafkaListener(
+            topics = "${spring.kafka.topics.order-created}",
+            groupId = "${spring.kafka.consumer.group-id}"
+    )
+    public void handleOrderCreatedEvent(@Payload OrderCreatedEvent event) {
+        log.info("Received OrderCreatedEvent for order: {}", event.getOrderId());
+        
+        // Send order confirmation
+        notificationService.sendOrderConfirmation(
+                event.getOrderId(),
+                event.getCustomerId(),
+                event.getTotalAmount()
+        );
+    }
+    
+    @KafkaListener(
+            topics = "${spring.kafka.topics.order-status-changed}",
+            groupId = "${spring.kafka.consumer.group-id}"
+    )
+    public void handleOrderStatusChangedEvent(@Payload OrderStatusChangedEvent event) {
+        log.info("Received OrderStatusChangedEvent for order: {}", event.getOrderId());
+        
+        // Send status update notification
+        notificationService.sendOrderStatusUpdate(
+                event.getOrderId(),
+                event.getOldStatus(),
+                event.getNewStatus()
+        );
+    }
+}
+
+
+/* ==========================================================================
+   FILE: OrderCreatedEvent.java
+   PATH: order-service\src\main\java\com\ecommerce\order\application\event\OrderCreatedEvent.java
+   ========================================================================== */
+
+package com.ecommerce.order.application.event;
+
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+import lombok.RequiredArgsConstructor;
+
+import java.math.BigDecimal;
+import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.UUID;
+
+import com.ecommerce.order.domain.model.OrderItem;
+
+
+@Data
+@AllArgsConstructor
+@RequiredArgsConstructor
+@Builder
+public class OrderCreatedEvent {
+    private UUID id;
+    private UUID customerId;
+    private BigDecimal totalAmount;
+    private String shippingAddress;
+    private String billingAddress;
+    private List<OrderItemEvent> items = new ArrayList<>();
+    
+}
+
+
+
+
+
+
+
+/*
+package com.ecommerce.customer.event;
+
+import lombok.AllArgsConstructor;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+import java.time.LocalDateTime;
+import java.util.UUID;
+
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+public class CustomerCreatedEvent {
+    private UUID customerId;
+    private String email;
+    private String firstName;
+    private String lastName;
+    private LocalDateTime timestamp = LocalDateTime.now();
+}
+ */
+
+
+/* ==========================================================================
+   FILE: OrderItemEvent.java
+   PATH: order-service\src\main\java\com\ecommerce\order\application\event\OrderItemEvent.java
+   ========================================================================== */
+
+package com.ecommerce.order.application.event;
+import lombok.AllArgsConstructor;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+import java.math.BigDecimal;
+import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.UUID;
+
+import com.ecommerce.order.domain.model.OrderItem;
+
+
+@Data
+@AllArgsConstructor
+public class OrderItemEvent {
+    private UUID productId;
+    private String sku;
+    private Integer quantity;
+    private BigDecimal unitPrice;
+    private String productName;
+}
+
+
+
+/* ==========================================================================
+   FILE: OrderStatusChangedEvent.java
+   PATH: order-service\src\main\java\com\ecommerce\order\application\event\OrderStatusChangedEvent.java
+   ========================================================================== */
+
+package com.ecommerce.order.application.event;
+
+import java.time.LocalDateTime;
+import java.util.UUID;
+
+import com.ecommerce.order.domain.model.Order;
+
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.RequiredArgsConstructor;
+
+@Data
+@RequiredArgsConstructor
+@AllArgsConstructor
+@Builder
+public class OrderStatusChangedEvent {
+    private UUID orderId;
+    private Order.OrderStatus oldStatus;
+    private Order.OrderStatus newStatus;
+    private LocalDateTime createdAt;
+    
+}
+
+
+
+/* ==========================================================================
+   FILE: OrderMapper.java
+   PATH: order-service\src\main\java\com\ecommerce\order\application\mapper\OrderMapper.java
+   ========================================================================== */
+
+package com.ecommerce.order.application.mapper;
+
+import com.ecommerce.order.domain.model.Order;
+import com.ecommerce.order.domain.model.OrderItem;
+import com.ecommerce.order.interfaces.rest.dto.OrderDTO;
+import com.ecommerce.order.interfaces.rest.dto.OrderItemDTO;
+import com.ecommerce.order.application.event.OrderItemEvent;
+
+import org.springframework.stereotype.Component;
+
+import java.util.List;
+import java.util.stream.Collectors;
+
+@Component
+public class OrderMapper {
+
+    public OrderDTO toDTO(Order order) {
+        if (order == null) return null;
+        
+        return OrderDTO.builder()
+                .id(order.getId())
+                .customerId(order.getCustomerId())
+                .status(order.getStatus())
+                .totalAmount(order.getTotalAmount())
+                .shippingAddress(order.getShippingAddress())
+                .billingAddress(order.getBillingAddress())
+                .items(toOrderItemDTOs(order.getItems()))
+                .createdAt(order.getCreatedAt())
+                .build();
+    }
+
+    private List<OrderItemDTO> toOrderItemDTOs(List<OrderItem> items) {
+        if (items == null) return List.of();
+        return items.stream()
+                .map(item -> OrderItemDTO.builder()
+                        .productId(item.getProductId())
+                        .sku(item.getSku())
+                        .productName(item.getProductName())
+                        .quantity(item.getQuantity())
+                        .unitPrice(item.getUnitPrice())
+                        .subtotal(item.getSubtotal())
+                        .build())
+                .collect(Collectors.toList());
+    }
+
+    public List<OrderItemEvent> toOrderItemEvents(List<OrderItem> items) {
+        if (items == null) return List.of();
+        return items.stream()
+                .map(item -> new OrderItemEvent(
+                        item.getProductId(),
+                        item.getSku(),
+                        item.getQuantity(),
+                        item.getUnitPrice(),
+                        item.getProductName())
+                )
+                .collect(Collectors.toList());
+    }
+}
+
+
+/* ==========================================================================
+   FILE: OrderService.java
+   PATH: order-service\src\main\java\com\ecommerce\order\application\service\OrderService.java
+   ========================================================================== */
+
+package com.ecommerce.order.application.service;
+
+
+import com.ecommerce.order.application.event.OrderCreatedEvent;
+import com.ecommerce.order.application.event.OrderStatusChangedEvent;
+import com.ecommerce.order.domain.exception.OrderNotFoundException;
+import com.ecommerce.order.domain.model.Order;
+import com.ecommerce.order.domain.model.OrderItem;
+import com.ecommerce.order.domain.repository.OrderRepository;
+import com.ecommerce.order.interfaces.rest.dto.OrderDTO;
+import com.ecommerce.order.application.mapper.OrderMapper;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.math.BigDecimal;
+import java.time.LocalDateTime;
+import java.util.List;
+import java.util.UUID;
+import java.util.stream.Collectors;
+
+@Service
+@RequiredArgsConstructor
+@Slf4j
+public class OrderService {
+    
+    private final OrderRepository orderRepository;
+    private final OrderMapper orderMapper;
+    private final ApplicationEventPublisher eventPublisher;
+    
+    @Transactional
+    public OrderDTO createOrder(OrderCreatedEvent request) {
+        log.info("Creating order for customer: {}", request.getCustomerId());
+        
+        Order order = Order.builder()
+                .customerId(request.getCustomerId())
+                .status(Order.OrderStatus.PENDING)
+                .shippingAddress(request.getShippingAddress())
+                .billingAddress(request.getBillingAddress())
+                .build();
+        
+        request.getItems().forEach(itemRequest -> {
+            OrderItem item = OrderItem.builder()
+                    .productId(itemRequest.getProductId())
+                    .sku(itemRequest.getSku())
+                    .productName(itemRequest.getProductName())
+                    .quantity(itemRequest.getQuantity())
+                    .unitPrice(itemRequest.getUnitPrice())
+                    .subtotal(itemRequest.getUnitPrice()
+                            .multiply(BigDecimal.valueOf(itemRequest.getQuantity())))
+                    .build();
+            order.addItem(item);
+        });
+        
+        order.calculateTotal();
+        order.setPaymentDueDate(LocalDateTime.now().plusDays(2));
+        
+        Order savedOrder = orderRepository.save(order);
+        
+        // Publish domain event
+        OrderCreatedEvent event = 
+        OrderCreatedEvent.builder().id(savedOrder.getId()).customerId(savedOrder.getCustomerId()).totalAmount(savedOrder.getTotalAmount()).items(orderMapper.toOrderItemEvents(savedOrder.getItems())).build();
+        
+        
+        eventPublisher.publishEvent(event);
+        
+        log.info("Order created successfully with id: {}", savedOrder.getId());
+        return orderMapper.toDTO(savedOrder);
+    }
+    
+    @Transactional(readOnly = true)
+    public OrderDTO getOrder(UUID orderId) {
+        log.debug("Fetching order with id: {}", orderId);
+        Order order = orderRepository.findByIdWithItems(orderId)
+                .orElseThrow(() -> new OrderNotFoundException(orderId));
+        return orderMapper.toDTO(order);
+    }
+    
+    @Transactional
+    public OrderDTO updateOrderStatus(UUID orderId, Order.OrderStatus newStatus) {
+        log.info("Updating order {} status to {}", orderId, newStatus);
+        
+        Order order = orderRepository.findById(orderId)
+                .orElseThrow(() -> new OrderNotFoundException(orderId));
+        
+        Order.OrderStatus oldStatus = order.getStatus();
+        order.setStatus(newStatus);
+        Order updatedOrder = orderRepository.save(order);
+        
+        // Publish status change event
+        eventPublisher.publishEvent(new OrderStatusChangedEvent(
+                orderId,
+                oldStatus,
+                newStatus,
+                LocalDateTime.now()
+        ));
+        
+        log.info("Order {} status updated from {} to {}", 
+                orderId, oldStatus, newStatus);
+        return orderMapper.toDTO(updatedOrder);
+    }
+    
+    @Transactional(readOnly = true)
+    public List<OrderDTO> getCustomerOrders(UUID customerId) {
+        log.debug("Fetching orders for customer: {}", customerId);
+        return orderRepository.findByCustomerId(customerId).stream()
+                .map(orderMapper::toDTO)
+                .collect(Collectors.toList());
+    }
+}
+
+
+/* ==========================================================================
+   FILE: OrderNotFoundException.java
+   PATH: order-service\src\main\java\com\ecommerce\order\domain\exception\OrderNotFoundException.java
+   ========================================================================== */
+
+package com.ecommerce.order.domain.exception;
+
+import org.springframework.http.HttpStatus;
+import org.springframework.web.bind.annotation.ResponseStatus;
+import java.util.UUID;
+
+@ResponseStatus(HttpStatus.NOT_FOUND)
+public class OrderNotFoundException extends RuntimeException {
+    public OrderNotFoundException(UUID id) {
+        super("Order not found with id: " + id);
+    }
+}
+
+
+/* ==========================================================================
+   FILE: Order.java
+   PATH: order-service\src\main\java\com\ecommerce\order\domain\model\Order.java
+   ========================================================================== */
+
+package com.ecommerce.order.domain.model;
+
+import jakarta.persistence.*;
+import lombok.*;
+import org.springframework.data.annotation.CreatedDate;
+import org.springframework.data.annotation.LastModifiedDate;
+import org.springframework.data.jpa.domain.support.AuditingEntityListener;
+
+import java.math.BigDecimal;
+import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.UUID;
+
+@Entity
+@Table(name = "orders")
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
+@EntityListeners(AuditingEntityListener.class)
+public class Order {
+    
+    @Id
+    @GeneratedValue(strategy = GenerationType.UUID)
+    private UUID id;
+    
+    @Column(name = "customer_id", nullable = false)
+    private UUID customerId;
+    
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false)
+    private OrderStatus status;
+    
+    @Column(name = "total_amount", nullable = false, precision = 10, scale = 2)
+    private BigDecimal totalAmount;
+    
+    @Column(name = "shipping_address", columnDefinition = "TEXT")
+    private String shippingAddress;
+    
+    @Column(name = "billing_address", columnDefinition = "TEXT")
+    private String billingAddress;
+    
+    @OneToMany(mappedBy = "order", cascade = CascadeType.ALL, orphanRemoval = true)
+    @Builder.Default
+    private List<OrderItem> items = new ArrayList<>();
+    
+    @CreatedDate
+    @Column(name = "created_at", updatable = false)
+    private LocalDateTime createdAt;
+    
+    @LastModifiedDate
+    @Column(name = "updated_at")
+    private LocalDateTime updatedAt;
+    
+    @Column(name = "payment_due_date")
+    private LocalDateTime paymentDueDate;
+    
+    @Version
+    private Long version;
+    
+    public enum OrderStatus {
+        PENDING,
+        CONFIRMED,
+        PROCESSING,
+        SHIPPED,
+        DELIVERED,
+        CANCELLED,
+        REFUNDED
+    }
+    
+    public void addItem(OrderItem item) {
+        items.add(item);
+        item.setOrder(this);
+    }
+    
+    public void calculateTotal() {
+        this.totalAmount = items.stream()
+                .map(OrderItem::getSubtotal)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+    }
+}
+
+
+/* ==========================================================================
+   FILE: OrderItem.java
+   PATH: order-service\src\main\java\com\ecommerce\order\domain\model\OrderItem.java
+   ========================================================================== */
+
+package com.ecommerce.order.domain.model;
+
+import jakarta.persistence.*;
+import lombok.*;
+import java.math.BigDecimal;
+import java.util.UUID;
+
+@Entity
+@Table(name = "order_items")
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
+public class OrderItem {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.UUID)
+    private UUID id;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "order_id")
+    @ToString.Exclude 
+    private Order order;
+
+    @Column(name = "product_id", nullable = false)
+    private UUID productId;
+
+    @Column(nullable = false)
+    private String sku;
+
+    @Column(name = "product_name", nullable = false)
+    private String productName;
+
+    @Column(nullable = false)
+    private Integer quantity;
+
+    @Column(name = "unit_price", nullable = false)
+    private BigDecimal unitPrice;
+
+    @Column(nullable = false)
+    private BigDecimal subtotal;
+}
+
+
+/* ==========================================================================
+   FILE: OrderRepository.java
+   PATH: order-service\src\main\java\com\ecommerce\order\domain\repository\OrderRepository.java
+   ========================================================================== */
+
+package com.ecommerce.order.domain.repository;
+
+import com.ecommerce.order.domain.model.Order;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
+import org.springframework.stereotype.Repository;
+
+import java.util.List;
+import java.util.Optional;
+import java.util.UUID;
+
+@Repository
+public interface OrderRepository extends JpaRepository<Order, UUID> {
+    
+    List<Order> findByCustomerId(UUID customerId);
+
+    // Fetch join để tránh lỗi LazyLoading khi lấy items
+    @Query("SELECT o FROM Order o LEFT JOIN FETCH o.items WHERE o.id = :id")
+    Optional<Order> findByIdWithItems(@Param("id") UUID id);
+}
+
+
+/* ==========================================================================
+   FILE: CreateOrderRequest.java
+   PATH: order-service\src\main\java\com\ecommerce\order\interfaces\rest\dto\CreateOrderRequest.java
+   ========================================================================== */
+
+package com.ecommerce.order.interfaces.rest.dto;
+
+import com.ecommerce.order.domain.model.Order.OrderStatus;
+import lombok.Builder;
+import lombok.Data;
+import java.math.BigDecimal;
+import java.time.LocalDateTime;
+import java.util.List;
+import java.util.UUID;
+
+
+
+@Data
+public class CreateOrderRequest {
+    private UUID customerId;
+    private String shippingAddress;
+    private String billingAddress;
+    private List<OrderItemRequest> items;
+}
+
+
+/* ==========================================================================
+   FILE: OrderDTO.java
+   PATH: order-service\src\main\java\com\ecommerce\order\interfaces\rest\dto\OrderDTO.java
+   ========================================================================== */
+
+package com.ecommerce.order.interfaces.rest.dto;
+
+import com.ecommerce.order.domain.model.Order.OrderStatus;
+import lombok.Builder;
+import lombok.Data;
+import java.math.BigDecimal;
+import java.time.LocalDateTime;
+import java.util.List;
+import java.util.UUID;
+
+@Data
+@Builder
+public class OrderDTO {
+    private UUID id;
+    private UUID customerId;
+    private OrderStatus status;
+    private BigDecimal totalAmount;
+    private String shippingAddress;
+    private String billingAddress;
+    private List<OrderItemDTO> items;
+    private LocalDateTime createdAt;
+}
+
+
+/* ==========================================================================
+   FILE: OrderItemDTO.java
+   PATH: order-service\src\main\java\com\ecommerce\order\interfaces\rest\dto\OrderItemDTO.java
+   ========================================================================== */
+
+package com.ecommerce.order.interfaces.rest.dto;
+
+import com.ecommerce.order.domain.model.Order.OrderStatus;
+import lombok.Builder;
+import lombok.Data;
+import java.math.BigDecimal;
+import java.time.LocalDateTime;
+import java.util.List;
+import java.util.UUID;
+
+@Data
+@Builder
+public class OrderItemDTO {
+    private UUID productId;
+    private String sku;
+    private String productName;
+    private Integer quantity;
+    private BigDecimal unitPrice;
+    private BigDecimal subtotal;
+}
+
+
+/* ==========================================================================
+   FILE: OrderItemRequest.java
+   PATH: order-service\src\main\java\com\ecommerce\order\interfaces\rest\dto\OrderItemRequest.java
+   ========================================================================== */
+
+package com.ecommerce.order.interfaces.rest.dto;
+
+import com.ecommerce.order.domain.model.Order.OrderStatus;
+import lombok.Builder;
+import lombok.Data;
+import java.math.BigDecimal;
+import java.time.LocalDateTime;
+import java.util.List;
+import java.util.UUID;
+
+@Data
+public class OrderItemRequest {
+    private UUID productId;
+    private String sku;
+    private String productName;
+    private Integer quantity;
+    private BigDecimal unitPrice;
+}
+
+
+/* ==========================================================================
+   FILE: OrderServiceApplication.java
+   PATH: order-service\src\main\java\com\ecommerce\order\OrderServiceApplication.java
+   ========================================================================== */
+
+package com.ecommerce.order;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+
+@SpringBootApplication
+public class OrderServiceApplication {
+    public static void main(String[] args) {
+        SpringApplication.run(OrderServiceApplication.class, args);
+    }
+}
+
+
+/* ==========================================================================
+   FILE: application.properties
+   PATH: order-service\src\main\resources\application.properties
+   ========================================================================== */
+
+# Sửa lại URL dùng Pooler (cổng 6543)
+spring.datasource.url=jdbc:postgresql://aws-1-ap-northeast-2.pooler.supabase.com:5432/postgres?sslmode=require
+
+# Lưu ý Username dành cho Pooler thường có thêm mã dự án phía sau
+spring.datasource.username=postgres.fjcsbzomnyncdjefnwoa
+spring.datasource.password=PhanTanMinh123%
+spring.datasource.driver-class-name=org.postgresql.Driver
+
+# Cấu hình JPA/Hibernate (Nếu cậu dùng JPA)
+spring.jpa.database-platform=org.hibernate.dialect.PostgreSQLDialect
+
+
+spring.jpa.hibernate.ddl-auto=create-drop
+
+#Để thấy quá trình xóa và tạo bảng trong log:
+spring.jpa.show-sql=true
+spring.jpa.properties.hibernate.format_sql=true
+
+
+eureka.client.service-url.defaultZone=http://admin:admin123@localhost:8761/eureka/
+
+
+/* ==========================================================================
+   FILE: PaymentServiceApplication.java
+   PATH: payment-service\PaymentServiceApplication.java
+   ========================================================================== */
+
+package com.ecommerce.payment;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.cloud.client.discovery.EnableDiscoveryClient;
+
+@SpringBootApplication
+@EnableDiscoveryClient
+public class PaymentServiceApplication {
+    public static void main(String[] args) {
+        SpringApplication.run(PaymentServiceApplication.class, args);
+    }
+}
+
+
+/* ==========================================================================
+   FILE: PaymentService.java
+   PATH: payment-service\src\main\java\com\ecommerce\payment\application\service\PaymentService.java
+   ========================================================================== */
+
+package com.ecommerce.payment.application.service;
+
+import com.ecommerce.payment.domain.model.Payment;
+import com.ecommerce.payment.domain.repository.PaymentRepository;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.math.BigDecimal;
+import java.time.LocalDateTime;
+import java.util.UUID;
+
+@Service
+@RequiredArgsConstructor
+@Slf4j
+public class PaymentService {
+
+    private final PaymentRepository paymentRepository;
+
+    @Transactional
+    public void createPendingPayment(UUID orderId, UUID customerId, BigDecimal amount, LocalDateTime orderDate) {
+        log.info("Creating pending payment for Order: {}", orderId);
+        
+        Payment payment = Payment.builder()
+                .orderId(orderId)
+                .customerId(customerId)
+                .amount(amount)
+                .status(Payment.PaymentStatus.PENDING)
+                .build();
+
+        paymentRepository.save(payment);
+        log.info("Payment record created successfully.");
+        
+        // Mock processing payment immediately for demo purposes
+        processPayment(payment);
+    }
+
+    private void processPayment(Payment payment) {
+        // Logic giả lập thanh toán
+        payment.setStatus(Payment.PaymentStatus.COMPLETED);
+        paymentRepository.save(payment);
+        log.info("Payment processed successfully for Order: {}", payment.getOrderId());
+    }
+}
+
+
+/* ==========================================================================
+   FILE: Payment.java
+   PATH: payment-service\src\main\java\com\ecommerce\payment\domain\model\Payment.java
+   ========================================================================== */
+
+package com.ecommerce.payment.domain.model;
+
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+import org.springframework.data.annotation.CreatedDate;
+import org.springframework.data.jpa.domain.support.AuditingEntityListener;
+
+import jakarta.persistence.*;
+import java.math.BigDecimal;
+import java.time.LocalDateTime;
+import java.util.UUID;
+
+@Entity
+@Table(name = "payments")
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
+@EntityListeners(AuditingEntityListener.class)
+public class Payment {
+    @Id
+    @GeneratedValue(strategy = GenerationType.UUID)
+    private UUID id;
+
+    @Column(name = "order_id", nullable = false)
+    private UUID orderId;
+
+    @Column(name = "customer_id", nullable = false)
+    private UUID customerId;
+
+    @Column(nullable = false)
+    private BigDecimal amount;
+
+    @Enumerated(EnumType.STRING)
+    private PaymentStatus status;
+
+    @CreatedDate
+    private LocalDateTime createdAt;
+
+    public enum PaymentStatus {
+        PENDING, COMPLETED, FAILED, REFUNDED
+    }
+}
+
+
+/* ==========================================================================
+   FILE: PaymentRepository.java
+   PATH: payment-service\src\main\java\com\ecommerce\payment\domain\repository\PaymentRepository.java
+   ========================================================================== */
+
+package com.ecommerce.payment.domain.repository;
+
+import com.ecommerce.payment.domain.model.Payment;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.stereotype.Repository;
+import java.util.UUID;
+
+@Repository
+public interface PaymentRepository extends JpaRepository<Payment, UUID> {
+}
+
+
+/* ==========================================================================
+   FILE: PaymentEventConsumer.java
+   PATH: payment-service\src\main\java\com\ecommerce\payment\infrastructure\messaging\PaymentEventConsumer.java
+   ========================================================================== */
+
+package com.ecommerce.payment.infrastructure.messaging;
+
+import com.ecommerce.payment.application.service.PaymentService;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.kafka.annotation.KafkaListener;
+import org.springframework.messaging.handler.annotation.Payload;
+import org.springframework.stereotype.Component;
+
+@Component
+@RequiredArgsConstructor
+@Slf4j
+public class PaymentEventConsumer {
+
+    private final PaymentService paymentService;
+
+    @KafkaListener(
+            topics = "${spring.kafka.topics.order-created}",
+            groupId = "${spring.kafka.consumer.group-id}"
+    )
+    public void handleOrderCreatedEvent(@Payload OrderCreatedEvent event) {
+        log.info("Received OrderCreatedEvent for order: {}", event.getOrderId());
+
+        try {
+            paymentService.createPendingPayment(
+                    event.getOrderId(),
+                    event.getCustomerId(),
+                    event.getTotalAmount(),
+                    event.getTimestamp()
+            );
+            log.info("Created pending payment for order: {}", event.getOrderId());
+        } catch (Exception e) {
+            log.error("Failed to create payment for order {}: {}", event.getOrderId(), e.getMessage());
+            // Tương tự, nếu lỗi thanh toán khởi tạo, cần ném exception
+            // để Kafka xử lý lại hoặc hệ thống Saga kích hoạt luồng bồi hoàn (Compensating Transaction)
+            throw new RuntimeException("Payment creation failed", e);
+        }
+    }
+}
+
+
+/* ==========================================================================
+   FILE: ProductServiceApplication.java
+   PATH: product-service\ProductServiceApplication.java
+   ========================================================================== */
+
+package com.ecommerce.product;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.cloud.client.discovery.EnableDiscoveryClient;
+
+@SpringBootApplication
+@EnableDiscoveryClient
+public class ProductServiceApplication {
+    public static void main(String[] args) {
+        SpringApplication.run(ProductServiceApplication.class, args);
+    }
+}
+
+
+/* ==========================================================================
+   FILE: ProductInventoryUpdatedEvent.java
+   PATH: product-service\src\main\java\com\ecommerce\product\application\event\ProductInventoryUpdatedEvent.java
+   ========================================================================== */
+
+package com.ecommerce.product.application.event;
+
+import lombok.AllArgsConstructor;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+import java.math.BigDecimal;
+import java.util.UUID;
+
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+public class ProductInventoryUpdatedEvent {
+    private UUID productId;
+    private String sku;
+    private Integer oldQuantity;
+    private Integer newQuantity;
+    private BigDecimal price;
+    private String eventType = "INVENTORY_UPDATED";
+}
+
+
+/* ==========================================================================
+   FILE: ProductService.java
+   PATH: product-service\src\main\java\com\ecommerce\product\application\service\ProductService.java
+   ========================================================================== */
+
+package com.ecommerce.product.application.service;
+
+import com.ecommerce.product.domain.model.Product;
+import com.ecommerce.product.domain.repository.ProductRepository;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.util.UUID;
+
+@Service
+@RequiredArgsConstructor
+@Slf4j
+public class ProductService {
+
+    private final ProductRepository productRepository;
+
+    // Cal by ProductEventConsumer
+    @Transactional
+    public void reserveStock(UUID productId, Integer quantity) {
+        log.info("Attempting to reserve {} items for product {}", quantity, productId);
+        
+        Product product = productRepository.findById(productId)
+                .orElseThrow(() -> new RuntimeException("Product not found: " + productId));
+
+        if (product.getStockQuantity() < quantity) {
+            throw new RuntimeException("Insufficient stock for product: " + productId);
+        }
+
+        product.setStockQuantity(product.getStockQuantity() - quantity);
+        productRepository.save(product);
+        
+        log.info("Stock reserved successfully. Remaining: {}", product.getStockQuantity());
+    }
+}
+
+
+/* ==========================================================================
+   FILE: Product.java
+   PATH: product-service\src\main\java\com\ecommerce\product\domain\model\Product.java
+   ========================================================================== */
+
+package com.ecommerce.product.domain.model;
+
+import jakarta.persistence.*;
+import lombok.*;
+import org.springframework.data.jpa.domain.support.AuditingEntityListener;
+import java.math.BigDecimal;
+import java.time.LocalDateTime;
+import java.util.UUID;
+
+@Entity
+@Table(name = "products")
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
+@EntityListeners(AuditingEntityListener.class)
+public class Product {
+    @Id
+    @GeneratedValue(strategy = GenerationType.UUID)
+    private UUID id;
+
+    @Column(nullable = false)
+    private String name;
+
+    @Column(nullable = false, unique = true)
+    private String sku;
+
+    @Column(nullable = false)
+    private BigDecimal price;
+
+    // Số lượng tồn kho (được quản lý bởi ProductService/InventoryService)
+    @Column(nullable = false)
+    private Integer stockQuantity;
+
+    private String description;
+}
+
+
+/* ==========================================================================
+   FILE: ProductRepository.java
+   PATH: product-service\src\main\java\com\ecommerce\product\domain\repository\ProductRepository.java
+   ========================================================================== */
+
+package com.ecommerce.product.domain.repository;
+
+import com.ecommerce.product.domain.model.Product;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.stereotype.Repository;
+import java.util.UUID;
+
+@Repository
+public interface ProductRepository extends JpaRepository<Product, UUID> {
+}
+
+
+/* ==========================================================================
+   FILE: ProductEventConsumer.java
+   PATH: product-service\src\main\java\com\ecommerce\product\infrastructure\messaging\ProductEventConsumer.java
+   ========================================================================== */
+
+package com.ecommerce.product.infrastructure.messaging;
+
+import com.ecommerce.product.application.service.ProductService;
+import com.ecommerce.product.common.event.OrderCreatedEvent;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.kafka.annotation.KafkaListener;
+import org.springframework.messaging.handler.annotation.Payload;
+import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Transactional;
+
+@Component
+@RequiredArgsConstructor
+@Slf4j
+public class ProductEventConsumer {
+
+    private final ProductService productService;
+
+    @KafkaListener(
+            topics = "${spring.kafka.topics.order-created}",
+            groupId = "${spring.kafka.consumer.group-id}"
+    )
+    @Transactional // Quan trọng: Đảm bảo toàn bộ việc trừ kho nằm trong 1 transaction DB
+    public void handleOrderCreatedEvent(@Payload OrderCreatedEvent event) {
+        log.info("Received OrderCreatedEvent for order: {}", event.getOrderId());
+
+        try {
+            // Xử lý tuần tự, nếu 1 cái lỗi sẽ nhảy xuống catch
+            for (var item : event.getItems()) {
+                productService.reserveStock(item.getProductId(), item.getQuantity());
+                log.info("Reserved {} units of product: {}", item.getQuantity(), item.getProductId());
+            }
+        } catch (Exception e) {
+            log.error("Failed to reserve stock for order {}. Rolling back transaction.", event.getOrderId(), e);
+            
+            // QUAN TRỌNG: Phải ném lỗi ra ngoài để Transaction Manager rollback lại các item đã trừ trước đó.
+            // Nếu nuốt lỗi (try-catch mà không throw), transaction sẽ commit -> sai lệch kho.
+            // Việc ném lỗi cũng giúp Kafka biết message này xử lý thất bại để retry hoặc đưa vào Dead Letter Queue.
+            throw new RuntimeException("Stock reservation failed", e);
+        }
+    }
+}
+
+
+/* ==========================================================================
+   FILE: ProductController.java
+   PATH: product-service\src\main\java\com\ecommerce\product\interfaces\rest\ProductController.java
+   ========================================================================== */
+
+package com.ecommerce.product.interfaces.rest;
+
+import com.ecommerce.product.domain.model.Product;
+import com.ecommerce.product.domain.repository.ProductRepository;
+import lombok.RequiredArgsConstructor;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+
+import java.util.List;
+import java.util.UUID;
+
+@RestController
+@RequestMapping("/api/products")
+@RequiredArgsConstructor
+public class ProductController {
+
+    private final ProductRepository productRepository;
+
+    @GetMapping
+    public List<Product> getAllProducts() {
+        return productRepository.findAll();
+    }
+
+    @GetMapping("/{id}")
+    public ResponseEntity<Product> getProduct(@PathVariable UUID id) {
+        return productRepository.findById(id)
+                .map(ResponseEntity::ok)
+                .orElse(ResponseEntity.notFound().build());
+    }
+
+    @PostMapping
+    public Product createProduct(@RequestBody Product product) {
+        return productRepository.save(product);
+    }
+}
+
+
+/* ==========================================================================
+   FILE: ProjectCombiner.java
+   PATH: ProjectCombiner.java
+   ========================================================================== */
+
+import java.io.BufferedWriter;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.*;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.Comparator;
+import java.util.List;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
+
+public class ProjectCombiner {
+
+    // Tên thư mục chứa kết quả xuất ra
+    private static final String EXPORT_DIR_NAME = "exported_source_code";
+
+    private static final String JAVA_EXTENSION = ".java";
+    private static final String OUTPUT_EXTENSION = ".txt";
+
+    // Format ngày giờ cho tên file (YYYYMMDD_HHmmss)
+    private static final DateTimeFormatter TIMESTAMP_FMT = DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss");
+
+    private static final String FILE_HEADER = "\n\n/* ==========================================================================\n" +
+            "   SOURCE FILE: %s\n" +
+            "   PATH: %s\n" +
+            "   ========================================================================== */\n\n";
+
+    public static void main(String[] args) {
+        Path rootPath = Paths.get(".").toAbsolutePath().normalize();
+        String projectName = rootPath.getFileName().toString();
+
+        // Tạo đường dẫn đến folder xuất file
+        Path exportDirPath = rootPath.resolve(EXPORT_DIR_NAME);
+
+        System.out.println("--- BẮT ĐẦU XỬ LÝ DỰ ÁN: " + projectName + " ---");
+
+        try {
+            // 1. Chuẩn bị folder xuất (Tạo mới hoặc dọn dẹp cũ)
+            prepareExportDirectory(exportDirPath);
+
+            // 2. Tạo timestamp hiện tại
+            String timestamp = LocalDateTime.now().format(TIMESTAMP_FMT);
+
+            // 3. Định nghĩa file tổng (Master File)
+            String masterFileName = String.format("%s_ALL_CODE_%s%s", projectName, timestamp, OUTPUT_EXTENSION);
+            Path masterOutputPath = exportDirPath.resolve(masterFileName);
+
+            // Mở Writer cho file tổng
+            try (BufferedWriter masterWriter = Files.newBufferedWriter(masterOutputPath, StandardCharsets.UTF_8, StandardOpenOption.CREATE, StandardOpenOption.APPEND)) {
+
+                // 4. Quét toàn bộ project
+                try (Stream<Path> paths = Files.walk(rootPath)) {
+                    List<Path> directories = paths.filter(Files::isDirectory)
+                            .filter(p -> !p.equals(exportDirPath)) // Không quét folder output
+                            .collect(Collectors.toList());
+
+                    for (Path dir : directories) {
+                        processDirectory(dir, rootPath, exportDirPath, masterWriter, timestamp);
+                    }
+                }
+            }
+
+            System.out.println("\n✅ HOÀN THÀNH TẤT CẢ!");
+            System.out.println("📂 Folder kết quả: " + exportDirPath);
+            System.out.println("📄 File tổng: " + masterFileName);
+
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+
+    // Hàm tạo và dọn dẹp thư mục xuất
+    private static void prepareExportDirectory(Path exportDirPath) throws IOException {
+        if (Files.exists(exportDirPath)) {
+            System.out.println("🧹 Đang dọn dẹp file cũ trong folder: " + EXPORT_DIR_NAME);
+            try (Stream<Path> files = Files.list(exportDirPath)) {
+                files.forEach(file -> {
+                    try {
+                        Files.delete(file);
+                    } catch (IOException e) {
+                        System.err.println("Không thể xóa file: " + file);
+                    }
+                });
+            }
+        } else {
+            Files.createDirectories(exportDirPath);
+            System.out.println("📁 Đã tạo folder mới: " + EXPORT_DIR_NAME);
+        }
+    }
+
+    private static void processDirectory(Path dir, Path rootPath, Path exportDirPath, BufferedWriter masterWriter, String timestamp) {
+        try {
+            // Lấy danh sách file .java trong folder hiện tại
+            List<Path> javaFiles = Files.list(dir)
+                    .filter(p -> p.toString().endsWith(JAVA_EXTENSION))
+                    .filter(p -> !p.getFileName().toString().equals("ProjectCombiner.java"))
+                    .collect(Collectors.toList());
+
+            if (javaFiles.isEmpty()) {
+                return;
+            }
+
+            // Tạo tên file riêng cho folder này (kèm timestamp)
+            String folderName = dir.getFileName().toString();
+            String folderOutputName = String.format("%s_%s%s", folderName, timestamp, OUTPUT_EXTENSION);
+            Path folderOutputPath = exportDirPath.resolve(folderOutputName);
+
+            System.out.println("👉 Xử lý: " + folderName + " -> " + folderOutputName);
+
+            // Mở Writer cho file folder
+            try (BufferedWriter folderWriter = Files.newBufferedWriter(folderOutputPath, StandardCharsets.UTF_8, StandardOpenOption.CREATE, StandardOpenOption.APPEND)) {
+
+                for (Path javaFile : javaFiles) {
+                    processSingleFile(javaFile, rootPath, masterWriter, folderWriter);
+                }
+            }
+
+        } catch (IOException e) {
+            System.err.println("Lỗi khi xử lý folder: " + dir);
+        }
+    }
+
+    private static void processSingleFile(Path javaFile, Path rootPath, BufferedWriter masterWriter, BufferedWriter folderWriter) throws IOException {
+        String relativePath = rootPath.relativize(javaFile).toString();
+        String header = String.format(FILE_HEADER, javaFile.getFileName(), relativePath);
+
+        // Ghi Header
+        masterWriter.write(header);
+        folderWriter.write(header);
+
+        // Đọc và lọc nội dung
+        List<String> lines = Files.readAllLines(javaFile, StandardCharsets.UTF_8);
+        for (String line : lines) {
+            String trimmedLine = line.trim();
+
+            // Loại bỏ import
+            if (trimmedLine.startsWith("import ")) {
+                continue;
+            }
+
+            masterWriter.write(line);
+            masterWriter.newLine();
+            folderWriter.write(line);
+            folderWriter.newLine();
+        }
+    }
+}
+
+
+/* ==========================================================================
+   FILE: SecurityConfig.java
+   PATH: service-discovery\src\main\java\com\ecommerce\discovery\config\SecurityConfig.java
+   ========================================================================== */
+
+package com.ecommerce.discovery.config;
+
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.security.config.Customizer;
+import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
+import org.springframework.security.web.SecurityFilterChain;
+
+@Configuration
+@EnableWebSecurity
+public class SecurityConfig {
+
+    @Bean
+    public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
+        http
+            // 1. QUAN TRỌNG: Phải tắt CSRF thì Eureka Client mới gửi request POST tới được
+            .csrf(csrf -> csrf.disable())
+            
+            // 2. Cho phép mọi yêu cầu đã xác thực (với user/pass admin)
+            .authorizeHttpRequests(auth -> auth
+                .anyRequest().authenticated()
+            )
+            
+            // 3. Sử dụng HTTP Basic Authentication (để truyền user:pass qua URL)
+            .httpBasic(Customizer.withDefaults());
+
+        return http.build();
+    }
+}
+
+
+/* ==========================================================================
+   FILE: ServiceDiscoveryApplication.java
+   PATH: service-discovery\src\main\java\com\ecommerce\discovery\ServiceDiscoveryApplication.java
+   ========================================================================== */
+
+package com.ecommerce.discovery;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.cloud.netflix.eureka.server.EnableEurekaServer;
+
+@SpringBootApplication
+@EnableEurekaServer
+public class ServiceDiscoveryApplication {
+
+    public static void main(String[] args) {
+        SpringApplication.run(ServiceDiscoveryApplication.class, args);
+    }
+}
+
+
+/* ==========================================================================
+   FILE: application.yaml
+   PATH: service-discovery\src\main\resources\application.yaml
+   ========================================================================== */
+
+server:
+  port: 8761
+
+spring:
+  application:
+    name: service-discovery
+  security:
+    user:
+      name: admin
+      password: ${EUREKA_PASSWORD:admin123}
+
+eureka:
+  instance:
+    hostname: localhost
+  client:
+    register-with-eureka: false
+    fetch-registry: false
+    service-url:
+      defaultZone: http://${spring.security.user.name}:${spring.security.user.password}@${eureka.instance.hostname}:${server.port}/eureka/
+  server:
+    enable-self-preservation: true
+    eviction-interval-timer-in-ms: 15000

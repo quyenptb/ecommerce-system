@@ -1,0 +1,185 @@
+
+
+/* ==========================================================================
+   FILE: CreateCustomerRequest.java
+   PATH: customer-service\src\main\java\com\ecommerce\customer\interfaces\rest\dto\CreateCustomerRequest.java
+   ========================================================================== */
+
+package com.ecommerce.customer.interfaces.rest.dto;
+
+import com.ecommerce.customer.domain.model.Customer.Address;
+import jakarta.validation.constraints.Email;
+import jakarta.validation.constraints.NotBlank;
+import lombok.Data;
+
+@Data
+public class CreateCustomerRequest {
+    @NotBlank(message = "Email is required")
+    @Email(message = "Email is not valid")
+    private String email;
+
+    @NotBlank(message = "Password is required")
+    private String password;
+
+    @NotBlank(message = "First name is required")
+    private String firstName;
+
+    @NotBlank(message = "Last name is required")
+    private String lastName;
+
+    private String phone;
+    
+    private Address address;
+}
+
+
+/* ==========================================================================
+   FILE: CustomerDTO.java
+   PATH: customer-service\src\main\java\com\ecommerce\customer\interfaces\rest\dto\CustomerDTO.java
+   ========================================================================== */
+
+package com.ecommerce.customer.interfaces.rest.dto;
+
+import com.ecommerce.customer.domain.model.Customer.Address;
+import lombok.Builder;
+import lombok.Data;
+import java.util.UUID;
+
+@Data
+@Builder
+public class CustomerDTO {
+    private UUID id;
+    private String email;
+    private String firstName;
+    private String lastName;
+    private String phone;
+    private Address address;
+    private boolean isActive;
+    private int loyaltyPoints;
+}
+
+
+/* ==========================================================================
+   FILE: UpdateCustomerRequest.java
+   PATH: customer-service\src\main\java\com\ecommerce\customer\interfaces\rest\dto\UpdateCustomerRequest.java
+   ========================================================================== */
+
+package com.ecommerce.customer.interfaces.rest.dto;
+
+import com.ecommerce.customer.domain.model.Customer.Address;
+import lombok.Data;
+
+@Data
+public class UpdateCustomerRequest {
+    private String firstName;
+    private String lastName;
+    private String phone;
+    private Address address;
+}
+
+
+/* ==========================================================================
+   FILE: CreateOrderRequest.java
+   PATH: order-service\src\main\java\com\ecommerce\order\interfaces\rest\dto\CreateOrderRequest.java
+   ========================================================================== */
+
+package com.ecommerce.order.interfaces.rest.dto;
+
+import com.ecommerce.order.domain.model.Order.OrderStatus;
+import lombok.Builder;
+import lombok.Data;
+import java.math.BigDecimal;
+import java.time.LocalDateTime;
+import java.util.List;
+import java.util.UUID;
+
+
+
+@Data
+public class CreateOrderRequest {
+    private UUID customerId;
+    private String shippingAddress;
+    private String billingAddress;
+    private List<OrderItemRequest> items;
+}
+
+
+/* ==========================================================================
+   FILE: OrderDTO.java
+   PATH: order-service\src\main\java\com\ecommerce\order\interfaces\rest\dto\OrderDTO.java
+   ========================================================================== */
+
+package com.ecommerce.order.interfaces.rest.dto;
+
+import com.ecommerce.order.domain.model.Order.OrderStatus;
+import lombok.Builder;
+import lombok.Data;
+import java.math.BigDecimal;
+import java.time.LocalDateTime;
+import java.util.List;
+import java.util.UUID;
+
+@Data
+@Builder
+public class OrderDTO {
+    private UUID id;
+    private UUID customerId;
+    private OrderStatus status;
+    private BigDecimal totalAmount;
+    private String shippingAddress;
+    private String billingAddress;
+    private List<OrderItemDTO> items;
+    private LocalDateTime createdAt;
+}
+
+
+/* ==========================================================================
+   FILE: OrderItemDTO.java
+   PATH: order-service\src\main\java\com\ecommerce\order\interfaces\rest\dto\OrderItemDTO.java
+   ========================================================================== */
+
+package com.ecommerce.order.interfaces.rest.dto;
+
+import com.ecommerce.order.domain.model.Order.OrderStatus;
+import lombok.Builder;
+import lombok.Data;
+import java.math.BigDecimal;
+import java.time.LocalDateTime;
+import java.util.List;
+import java.util.UUID;
+
+@Data
+@Builder
+public class OrderItemDTO {
+    private UUID productId;
+    private String sku;
+    private String productName;
+    private Integer quantity;
+    private BigDecimal unitPrice;
+    private BigDecimal subtotal;
+}
+
+
+/* ==========================================================================
+   FILE: OrderItemRequest.java
+   PATH: order-service\src\main\java\com\ecommerce\order\interfaces\rest\dto\OrderItemRequest.java
+   ========================================================================== */
+
+package com.ecommerce.order.interfaces.rest.dto;
+
+import com.ecommerce.order.domain.model.Order.OrderStatus;
+import lombok.Builder;
+import lombok.Data;
+import java.math.BigDecimal;
+import java.time.LocalDateTime;
+import java.util.List;
+import java.util.UUID;
+
+@Data
+public class OrderItemRequest {
+    private UUID productId;
+    private String sku;
+    private String productName;
+    private Integer quantity;
+    private BigDecimal unitPrice;
+}

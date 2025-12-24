@@ -1,0 +1,55 @@
+# --- Build tools ---
+target/
+build/
+out/
+
+# --- IDE ---
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.project
+.classpath
+.settings/
+
+# --- OS files ---
+.DS_Store
+Thumbs.db
+
+# --- Logs ---
+*.log
+logs/
+log/
+
+# --- Runtime files ---
+*.pid
+*.seed
+*.tmp
+
+# --- Docker ---
+# Nếu bạn mount volume log hoặc data thì ignore
+docker-compose.override.yml
+.env
+
+# --- Supabase ---
+# Không commit file chứa secret key
+supabase/.env
+supabase/config.json
+
+# --- Java ---
+*.class
+*.jar
+*.war
+*.ear
+
+# --- Test reports ---
+surefire-reports/
+test-output/
+
+# --- Node (nếu microservice có frontend kèm theo) ---
+node_modules/
+dist/
+
+UniversalProjectCombiner.java
+ProjectCombiner.java

@@ -1,0 +1,49 @@
+pipeline {
+    agent any
+    environment {
+        // Environment variables for Docker containers
+        KAFKA_HOST = 'kafka'       // Tên service trong docker-compose
+        KAFKA_PORT = '29092'       // Port nội bộ
+        EUREKA_HOST = 'service-discovery'
+    }
+    stages {
+        stage('Build Maven') {
+            steps {
+                // Build Java to file .jar
+                sh 'mvn clean package -DskipTests' 
+            }
+        }
+        
+        stage('Build Docker Images') {
+            steps {
+                script {
+                    // build service-discovery and order-service
+                    sh 'docker build -t my-discovery:v1 ./service-discovery'
+                    sh 'docker build -t my-order:v1 ./order-service'
+                }
+            }
+        }
+
+        stage('Deploy') {
+            steps {
+                script {
+                    // 1. Remove old containers if any
+                    sh 'docker rm -f discovery order || true'
+                    
+                    // 2. Run Service Discovery
+                    sh 'docker run -d --name discovery --network devops-net -p 8761:8761 my-discovery:v1'
+
+                    // 3. Run Order Service (Connect to Supabase + Kafka)
+
+                    sh """
+                        docker run -d --name order --network devops-net -p 8082:8082 \\
+                        -e KAFKA_HOST=${KAFKA_HOST} \\
+                        -e KAFKA_PORT=${KAFKA_PORT} \\
+                        -e EUREKA_HOST=${EUREKA_HOST} \\
+                        my-order:v1
+                    """
+                }
+            }
+        }
+    }
+}

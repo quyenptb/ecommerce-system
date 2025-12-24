@@ -1,0 +1,113 @@
+
+
+/* ==========================================================================
+   FILE: CustomerRepository.java
+   PATH: customer-service\src\main\java\com\ecommerce\customer\domain\repository\CustomerRepository.java
+   ========================================================================== */
+
+package com.ecommerce.customer.domain.repository;
+
+import com.ecommerce.customer.domain.model.Customer;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
+import org.springframework.stereotype.Repository;
+
+import java.util.Optional;
+import java.util.UUID;
+
+@Repository
+public interface CustomerRepository extends JpaRepository<Customer, UUID> {
+    
+    Optional<Customer> findByEmail(String email);
+    
+    boolean existsByEmail(String email);
+    
+    boolean existsByPhone(String phone);
+    
+    @Query("SELECT c FROM Customer c WHERE c.email = :email AND c.isActive = true")
+    Optional<Customer> findActiveByEmail(@Param("email") String email);
+}
+
+
+/* ==========================================================================
+   FILE: InventoryRepository.java
+   PATH: inventory-service\src\main\java\com\ecommerce\inventory\domain\repository\InventoryRepository.java
+   ========================================================================== */
+
+package com.ecommerce.inventory.domain.repository;
+
+import com.ecommerce.inventory.domain.model.Inventory;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.stereotype.Repository;
+
+import java.util.Optional;
+import java.util.UUID;
+
+@Repository
+public interface InventoryRepository extends JpaRepository<Inventory, UUID> {
+    Optional<Inventory> findByProductId(UUID productId);
+    Optional<Inventory> findBySku(String sku);
+}
+
+
+/* ==========================================================================
+   FILE: OrderRepository.java
+   PATH: order-service\src\main\java\com\ecommerce\order\domain\repository\OrderRepository.java
+   ========================================================================== */
+
+package com.ecommerce.order.domain.repository;
+
+import com.ecommerce.order.domain.model.Order;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
+import org.springframework.stereotype.Repository;
+
+import java.util.List;
+import java.util.Optional;
+import java.util.UUID;
+
+@Repository
+public interface OrderRepository extends JpaRepository<Order, UUID> {
+    
+    List<Order> findByCustomerId(UUID customerId);
+
+    // Fetch join để tránh lỗi LazyLoading khi lấy items
+    @Query("SELECT o FROM Order o LEFT JOIN FETCH o.items WHERE o.id = :id")
+    Optional<Order> findByIdWithItems(@Param("id") UUID id);
+}
+
+
+/* ==========================================================================
+   FILE: PaymentRepository.java
+   PATH: payment-service\src\main\java\com\ecommerce\payment\domain\repository\PaymentRepository.java
+   ========================================================================== */
+
+package com.ecommerce.payment.domain.repository;
+
+import com.ecommerce.payment.domain.model.Payment;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.stereotype.Repository;
+import java.util.UUID;
+
+@Repository
+public interface PaymentRepository extends JpaRepository<Payment, UUID> {
+}
+
+
+/* ==========================================================================
+   FILE: ProductRepository.java
+   PATH: product-service\src\main\java\com\ecommerce\product\domain\repository\ProductRepository.java
+   ========================================================================== */
+
+package com.ecommerce.product.domain.repository;
+
+import com.ecommerce.product.domain.model.Product;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.stereotype.Repository;
+import java.util.UUID;
+
+@Repository
+public interface ProductRepository extends JpaRepository<Product, UUID> {
+}

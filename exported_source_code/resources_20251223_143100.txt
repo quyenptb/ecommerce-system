@@ -1,0 +1,131 @@
+
+
+/* ==========================================================================
+   FILE: application.yml
+   PATH: api-gateway\src\main\resources\application.yml
+   ========================================================================== */
+
+server:
+  port: 8080
+
+spring:
+  application:
+    name: api-gateway
+  cloud:
+    gateway:
+      discovery:
+        locator:
+          enabled: true
+          lower-case-service-id: true
+      routes:
+        - id: customer-service
+          uri: lb://customer-service
+          predicates:
+            - Path=/api/customers/**
+          filters:
+            - name: CircuitBreaker
+              args:
+                name: customerService
+                fallbackUri: forward:/fallback/customer
+        - id: product-service
+          uri: lb://product-service
+          predicates:
+            - Path=/api/products/**
+        - id: order-service
+          uri: lb://order-service
+          predicates:
+            - Path=/api/orders/**
+        - id: payment-service
+          uri: lb://payment-service
+          predicates:
+            - Path=/api/payments/**
+      default-filters:
+        - name: RequestRateLimiter
+          args:
+            redis-rate-limiter.replenishRate: 10
+            redis-rate-limiter.burstCapacity: 20
+            key-resolver: "#{@userKeyResolver}"
+        - name: Retry
+          args:
+            retries: 3
+            series: SERVER_ERROR
+
+eureka:
+  client:
+    service-url:
+      defaultZone: http://admin:admin123@localhost:8761/eureka/
+  instance:
+    prefer-ip-address: true
+
+resilience4j:
+  circuitbreaker:
+    instances:
+      customerService:
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 5s
+        permitted-number-of-calls-in-half-open-state: 3
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,gateway
+  tracing:
+    sampling:
+      probability: 1.0
+
+
+/* ==========================================================================
+   FILE: application.properties
+   PATH: order-service\src\main\resources\application.properties
+   ========================================================================== */
+
+# Sửa lại URL dùng Pooler (cổng 6543)
+spring.datasource.url=jdbc:postgresql://aws-1-ap-northeast-2.pooler.supabase.com:5432/postgres?sslmode=require
+
+# Lưu ý Username dành cho Pooler thường có thêm mã dự án phía sau
+spring.datasource.username=postgres.fjcsbzomnyncdjefnwoa
+spring.datasource.password=PhanTanMinh123%
+spring.datasource.driver-class-name=org.postgresql.Driver
+
+# Cấu hình JPA/Hibernate (Nếu cậu dùng JPA)
+spring.jpa.database-platform=org.hibernate.dialect.PostgreSQLDialect
+
+
+spring.jpa.hibernate.ddl-auto=create-drop
+
+#Để thấy quá trình xóa và tạo bảng trong log:
+spring.jpa.show-sql=true
+spring.jpa.properties.hibernate.format_sql=true
+
+
+eureka.client.service-url.defaultZone=http://admin:admin123@localhost:8761/eureka/
+
+
+/* ==========================================================================
+   FILE: application.yaml
+   PATH: service-discovery\src\main\resources\application.yaml
+   ========================================================================== */
+
+server:
+  port: 8761
+
+spring:
+  application:
+    name: service-discovery
+  security:
+    user:
+      name: admin
+      password: ${EUREKA_PASSWORD:admin123}
+
+eureka:
+  instance:
+    hostname: localhost
+  client:
+    register-with-eureka: false
+    fetch-registry: false
+    service-url:
+      defaultZone: http://${spring.security.user.name}:${spring.security.user.password}@${eureka.instance.hostname}:${server.port}/eureka/
+  server:
+    enable-self-preservation: true
+    eviction-interval-timer-in-ms: 15000
